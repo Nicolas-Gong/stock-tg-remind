@@ -1,0 +1,8 @@
+{
+  "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN",
+  "data_file": "stock_data.json",
+  "cache_file": "stock_cache.json",
+  "check_interval": 60,
+  "timeout": 10,
+  "cache_expiry_seconds": 6
+}
