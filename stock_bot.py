@@ -100,11 +100,17 @@ class StockDataFetcher:
         # 从腾讯财经API获取数据
         try:
             # 构建API URL
-            # 上海股票前缀 sh，深圳股票前缀 sz
+            # 支持多市场：上海(sh)、深圳(sz)、港股(hk)、美股(us)
             if stock_code.startswith('6'):
                 api_url = f"http://qt.gtimg.cn/q=sh{stock_code}"
             elif stock_code.startswith('0') or stock_code.startswith('3'):
                 api_url = f"http://qt.gtimg.cn/q=sz{stock_code}"
+            elif stock_code.isdigit() and len(stock_code) == 5:
+                # 港股代码（5位数字）
+                api_url = f"http://qt.gtimg.cn/q=hk{stock_code}"
+            elif stock_code.replace('.', '').isalpha():
+                # 美股代码（字母）
+                api_url = f"http://qt.gtimg.cn/q=us{stock_code}"
             else:
                 # 默认当作上海股票
                 api_url = f"http://qt.gtimg.cn/q=sh{stock_code}"
@@ -190,11 +196,13 @@ class AlertManager:
             "created_at": datetime.now().isoformat()
         }
 
-        # 检查是否已存在相同提醒
+        # 检查是否已存在完全相同的提醒
         for existing in self.alerts["alerts"]:
             if (existing["user_id"] == user_id and
                 existing["stock_code"] == stock_code and
-                existing["alert_type"] == alert_type):
+                existing["alert_type"] == alert_type and
+                existing["threshold"] == threshold and
+                existing["interval_minutes"] == interval_minutes):
                 return False  # 已存在
 
         self.alerts["alerts"].append(alert)
