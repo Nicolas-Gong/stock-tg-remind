@@ -42,7 +42,7 @@ CONFIG = {
 def is_trading_time(stock_code: str) -> bool:
     """
     检查股票是否在交易时间内
-    支持A股、港股、美股的交易时间判断
+    支持A股、港股、美股的交易时间判断（北京时间）
     """
     now = datetime.now()
     current_time = now.time()
@@ -54,7 +54,7 @@ def is_trading_time(stock_code: str) -> bool:
 
     # 根据股票代码判断市场和交易时间
     if stock_code.startswith(('6', '0', '3')):
-        # 中国A股：9:30-11:30, 13:00-15:00
+        # 中国A股：北京时间 9:30-11:30, 13:00-15:00
         morning_start = datetime.strptime("09:30", "%H:%M").time()
         morning_end = datetime.strptime("11:30", "%H:%M").time()
         afternoon_start = datetime.strptime("13:00", "%H:%M").time()
@@ -64,7 +64,7 @@ def is_trading_time(stock_code: str) -> bool:
                (afternoon_start <= current_time <= afternoon_end)
 
     elif stock_code.isdigit() and len(stock_code) == 5:
-        # 港股：9:30-12:00, 13:00-16:00
+        # 港股：北京时间 9:30-12:00, 13:00-16:00
         morning_start = datetime.strptime("09:30", "%H:%M").time()
         morning_end = datetime.strptime("12:00", "%H:%M").time()
         afternoon_start = datetime.strptime("13:00", "%H:%M").time()
@@ -74,12 +74,17 @@ def is_trading_time(stock_code: str) -> bool:
                (afternoon_start <= current_time <= afternoon_end)
 
     elif stock_code.replace('.', '').isalpha():
-        # 美股：不同市场有不同时间，这里简化处理
-        # 通常美股交易时间为美东时间 9:30-16:00
-        # 北京时间约17:30-次日00:30，但这里简化判断
-        # 为了简化，我们假设美股在工作日的任何时间都可以交易
-        # 实际项目中应该根据具体市场和时区进行精确判断
-        return True
+        # 美股：美东时间 9:30-16:00，转换为北京时间
+        # 北京时间：21:30(今) - 04:00(明) 或 22:30(今) - 05:00(明)
+        # 这里简化为北京时间 21:30 到次日 04:00
+        us_start_evening = datetime.strptime("21:30", "%H:%M").time()
+        us_end_next_morning = datetime.strptime("04:00", "%H:%M").time()
+
+        # 如果是晚上21:30之后到23:59，或是凌晨00:00到04:00
+        if current_time >= us_start_evening or current_time <= us_end_next_morning:
+            return True
+
+        return False
 
     else:
         # 未知市场，默认认为在交易时间内
