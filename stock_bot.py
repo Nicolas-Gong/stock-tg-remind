@@ -148,9 +148,9 @@ class StockDataFetcher:
         if cached_data:
             return cached_data
 
-        # 从腾讯财经API获取数据
+        # 从腾讯财经API获取数据（支持批量请求优化）
         try:
-            # 构建API URL
+            # 构建API URL（单个请求）
             # 支持多市场：上海(sh)、深圳(sz)、港股(hk)、美股(us)
             if stock_code.startswith('6'):
                 api_url = f"http://qt.gtimg.cn/q=sh{stock_code}"
@@ -170,45 +170,78 @@ class StockDataFetcher:
             response = self.session.get(api_url, timeout=10)
             response.raise_for_status()
 
-            # 解析腾讯财经API返回的数据（处理GBK编码）
-            raw_data = response.text
-            if not raw_data or 'v_' not in raw_data:
-                print(f"无效的API响应: {raw_data}")
-                return None
-
-            # 提取数据字符串
-            data_str = raw_data.split('=')[1].strip('";\n')
-            fields = data_str.split('~')
-
-            if len(fields) < 50:  # 确保有足够的数据字段
-                print(f"数据字段不完整: {len(fields)}")
-                return None
-
-            # 解析股票数据
-            stock_data = {
-                "code": fields[2],  # 股票代码
-                "name": fields[1],  # 股票名称
-                "current_price": float(fields[3]),  # 当前价格
-                "prev_close": float(fields[4]),     # 昨收
-                "open_price": float(fields[5]),     # 今开
-                "high_price": float(fields[33]),    # 最高价
-                "low_price": float(fields[34]),     # 最低价
-                "timestamp": datetime.now().isoformat()
-            }
-
-            # 计算涨跌幅
-            change = stock_data["current_price"] - stock_data["prev_close"]
-            change_percent = (change / stock_data["prev_close"]) * 100
-            stock_data["change"] = round(change, 2)
-            stock_data["change_percent"] = round(change_percent, 2)
-
-            # 缓存数据
-            self.cache.set_stock_data(stock_code, stock_data)
-            return stock_data
+            # 解析腾讯财经API返回的数据
+            stock_data = self._parse_api_response(response.text, stock_code)
+            if stock_data:
+                # 缓存数据
+                self.cache.set_stock_data(stock_code, stock_data)
+                return stock_data
 
         except Exception as e:
             print(f"获取股票数据失败: {e}")
             return None
+
+    def _parse_api_response(self, raw_data: str, target_code: str) -> Optional[Dict]:
+        """解析腾讯财经API的批量响应数据"""
+        if not raw_data or 'v_' not in raw_data:
+            print(f"无效的API响应: {raw_data}")
+            return None
+
+        # 腾讯财经API支持批量请求，返回多行数据
+        # 每行格式：v_{market}{code}="data"\n
+        lines = raw_data.strip().split('\n')
+
+        for line in lines:
+            if not line.startswith('v_'):
+                continue
+
+            try:
+                # 提取股票代码和数据
+                # 格式：v_sh600519="1~茅台~600519~..." 或 v_usAAPL="200~Apple~AAPL~..."
+                parts = line.split('=', 1)
+                if len(parts) != 2:
+                    continue
+
+                code_part = parts[0][2:]  # 去掉'v_'前缀
+                data_str = parts[1].strip('";')
+
+                # 检查是否是我们需要的股票代码
+                if target_code in code_part:
+                    fields = data_str.split('~')
+
+                    if len(fields) < 50:  # 确保有足够的数据字段
+                        print(f"数据字段不完整: {len(fields)}")
+                        continue
+
+                    # 解析股票数据
+                    stock_data = {
+                        "code": fields[2],  # 股票代码
+                        "name": fields[1],  # 股票名称
+                        "current_price": float(fields[3]),  # 当前价格
+                        "prev_close": float(fields[4]),     # 昨收
+                        "open_price": float(fields[5]),     # 今开
+                        "high_price": float(fields[33]) if len(fields) > 33 and fields[33] else 0,    # 最高价
+                        "low_price": float(fields[34]) if len(fields) > 34 and fields[34] else 0,     # 最低价
+                        "timestamp": datetime.now().isoformat()
+                    }
+
+                    # 计算涨跌幅
+                    if stock_data["prev_close"] > 0:
+                        change = stock_data["current_price"] - stock_data["prev_close"]
+                        change_percent = (change / stock_data["prev_close"]) * 100
+                        stock_data["change"] = round(change, 2)
+                        stock_data["change_percent"] = round(change_percent, 2)
+                    else:
+                        stock_data["change"] = 0
+                        stock_data["change_percent"] = 0
+
+                    return stock_data
+
+            except (ValueError, IndexError) as e:
+                print(f"解析股票数据时出错: {e}")
+                continue
+
+        return None
 
 # 提醒管理
 class AlertManager:
