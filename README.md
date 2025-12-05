@@ -41,13 +41,12 @@ pip install -r requirements.txt
 
 ```json
 {
-  "telegram_token": "你的机器人令牌",
+  "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN",
   "data_file": "stock_data.json",
   "cache_file": "stock_cache.json",
   "name_cache_file": "stock_names.json",
   "check_interval": 60,
-  "timeout": 10,
-  "cache_expiry_seconds": 6
+  "timeout": 10
 }
 ```
 
@@ -58,7 +57,6 @@ pip install -r requirements.txt
 - `name_cache_file`：股票名称映射缓存文件
 - `check_interval`：检查提醒的时间间隔（秒）
 - `timeout`：请求超时时间（秒）
-- `cache_expiry_seconds`：股票数据缓存过期时间（秒）
 
 ### 5. 启动机器人
 
@@ -134,7 +132,6 @@ python stock_bot.py
 - `cache_file`：股票数据缓存文件
 - `check_interval`：检查提醒的时间间隔（秒）
 - `timeout`：请求超时时间（秒）
-- `cache_expiry_seconds`：股票数据缓存过期时间（秒），默认6秒
 
 ### 数据存储
 

@@ -36,7 +36,7 @@ DEFAULT_CONFIG = {
     "name_cache_file": "stock_names.json",  # 股票名称缓存文件
     "check_interval": 60,  # 检查间隔（秒）
     "timeout": 10,  # 请求超时时间
-    "cache_expiry_seconds": 6,  # 缓存过期时间（秒）
+    # 移除缓存过期时间配置，因为批量获取机制使得缓存过期检查不再必要
 }
 
 
@@ -183,10 +183,8 @@ class StockCache:
         """获取股票数据（优先从缓存）"""
         if stock_code in self.cache:
             cached_data = self.cache[stock_code]
-            # 检查缓存是否过期
-            cache_expiry = timedelta(seconds=CONFIG.get("cache_expiry_seconds", 6))
-            if datetime.now() - datetime.fromisoformat(cached_data['timestamp']) < cache_expiry:
-                return cached_data['data']
+            # 直接返回缓存中的数据，移除过期检查
+            return cached_data['data']
         return None
 
     def set_stock_data(self, stock_code: str, data: Dict):
