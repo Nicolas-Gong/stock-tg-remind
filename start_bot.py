@@ -42,7 +42,7 @@ def validate_config(config):
     return True
 
 
-def main():
+async def main():
     """主函数"""
     logger.info("🚀 开始启动股票提醒机器人...")
 
@@ -57,6 +57,11 @@ def main():
         logger.info("🤖 初始化机器人...")
         bot = StockBot(config["telegram_token"])
         logger.info("✅ 机器人初始化成功")
+
+        # 设置Bot Commands
+        logger.info("⚙️ 设置机器人命令...")
+        await bot.setup_bot_commands()
+        logger.info("✅ 机器人命令设置成功")
 
         # 启动提醒检查
         logger.info("🔄 启动定期提醒检查任务...")
@@ -87,4 +92,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
