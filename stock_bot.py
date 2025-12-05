@@ -402,10 +402,26 @@ class AlertManager:
         self._save_alerts()
         return True
 
+    async def send_alert_message(self, bot: telegram.Bot, chat_id: int, message: str):
+        """异步发送提醒消息"""
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=message,
+                parse_mode=telegram.constants.ParseMode.HTML
+            )
+            return True
+        except Exception as e:
+            print(f"发送提醒失败: {e}")
+            return False
+
     def check_alerts(self, fetcher: StockDataFetcher, bot: telegram.Bot):
         """检查所有提醒并发送通知"""
         current_time = datetime.now()
         print(f"[{current_time}] 开始检查提醒，共 {len(self.alerts['alerts'])} 个提醒")
+
+        # 收集需要发送提醒的消息
+        alerts_to_send = []
 
         for alert in self.alerts["alerts"]:
             stock_code = alert["stock_code"]
@@ -498,26 +514,36 @@ class AlertManager:
                 can_send = self.can_send_alert(alert)
                 print(f"[{current_time}] {stock_code} 提醒触发，但检查发送权限: {can_send}")
                 if can_send:
-                    try:
-                        print(f"[{current_time}] {stock_code} 发送提醒消息: {message[:50]}...")
-                        # 注意：这里需要使用异步方式，但当前是同步函数
-                        # 暂时使用同步方式，后续可以优化为异步
-                        import asyncio
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(
-                            bot.send_message(
-                                chat_id=alert["user_id"],
-                                text=message,
-                                parse_mode=telegram.constants.ParseMode.HTML
-                            )
-                        )
-                        loop.close()
-                        print(f"[{current_time}] {stock_code} 提醒消息发送成功")
-                    except Exception as e:
-                        print(f"[{current_time}] {stock_code} 发送提醒失败: {e}")
+                    alerts_to_send.append((alert["user_id"], message, stock_code))
+                    print(f"[{current_time}] {stock_code} 准备发送提醒消息: {message[:50]}...")
                 else:
                     print(f"[{current_time}] {stock_code} 因时间间隔限制跳过提醒")
+
+        # 批量发送提醒消息
+        if alerts_to_send:
+            print(f"[{current_time}] 开始批量发送 {len(alerts_to_send)} 条提醒消息")
+            import asyncio
+
+            async def send_all_alerts():
+                for chat_id, message, stock_code in alerts_to_send:
+                    try:
+                        success = await self.send_alert_message(bot, chat_id, message)
+                        if success:
+                            print(f"[{current_time}] {stock_code} 提醒消息发送成功")
+                        else:
+                            print(f"[{current_time}] {stock_code} 提醒消息发送失败")
+                    except Exception as e:
+                        print(f"[{current_time}] {stock_code} 发送提醒异常: {e}")
+
+            # 创建新的事件循环来发送所有消息
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(send_all_alerts())
+                loop.close()
+                print(f"[{current_time}] 批量发送完成")
+            except Exception as e:
+                print(f"[{current_time}] 批量发送过程中出错: {e}")
 
 # 机器人命令处理
 class StockBot:
