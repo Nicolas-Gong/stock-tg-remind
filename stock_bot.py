@@ -1287,23 +1287,3 @@ class StockBot:
             interval=CONFIG["check_interval"],
             first=10  # 10秒后开始第一次检查
         )
-
-
-async def main():
-    """主函数"""
-    # 创建机器人实例
-    bot = StockBot(CONFIG["telegram_token"])
-
-    # 设置Bot Commands
-    await bot.setup_bot_commands()
-
-    # 启动提醒检查
-    bot.start_checking_alerts()
-
-    # 启动机器人（run_polling会处理事件循环）
-    bot.app.run_polling()
-
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
