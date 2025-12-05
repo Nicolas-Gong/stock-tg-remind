@@ -209,16 +209,51 @@ class StockDataFetcher:
         })
 
     def fetch_stock_data(self, stock_code: str) -> Optional[Dict]:
-        """从腾讯财经API获取股票数据"""
+        """从腾讯财经API获取股票数据（单个股票）"""
         # 先尝试从缓存获取
         cached_data = self.cache.get_stock_data(stock_code)
         if cached_data:
             return cached_data
 
-        # 从腾讯财经API获取数据（使用新的JSON接口）
-        try:
-            # 构建API URL（支持多市场）
-            # 新接口格式：https://sqt.gtimg.cn/?q=sh000001,sz399001&fmt=json
+        # 单个股票获取（兼容旧接口）
+        return self._fetch_batch_stock_data([stock_code]).get(stock_code)
+
+    def fetch_batch_stock_data(self, stock_codes: List[str]) -> Dict[str, Optional[Dict]]:
+        """批量从腾讯财经API获取多个股票数据"""
+        if not stock_codes:
+            return {}
+
+        # 检查缓存中已有的数据
+        result = {}
+        uncached_codes = []
+
+        for code in stock_codes:
+            cached_data = self.cache.get_stock_data(code)
+            if cached_data:
+                result[code] = cached_data
+            else:
+                uncached_codes.append(code)
+
+        # 如果所有数据都在缓存中，直接返回
+        if not uncached_codes:
+            return result
+
+        # 批量获取未缓存的数据
+        batch_result = self._fetch_batch_stock_data(uncached_codes)
+
+        # 合并结果
+        result.update(batch_result)
+        return result
+
+    def _fetch_batch_stock_data(self, stock_codes: List[str]) -> Dict[str, Optional[Dict]]:
+        """内部批量获取股票数据"""
+        if not stock_codes:
+            return {}
+
+        # 构建批量API请求
+        api_parts = []
+        for stock_code in stock_codes:
+            # 构建市场前缀
             if stock_code.startswith('6'):
                 market_prefix = "sh"
             elif stock_code.startswith('0') or stock_code.startswith('3'):
@@ -233,22 +268,106 @@ class StockDataFetcher:
                 # 默认当作上海股票
                 market_prefix = "sh"
 
-            api_url = f"https://sqt.gtimg.cn/?q={market_prefix}{stock_code}&fmt=json"
+            api_parts.append(f"{market_prefix}{stock_code}")
 
+        # 腾讯财经API支持一次请求多个股票，用逗号分隔
+        api_url = f"https://sqt.gtimg.cn/?q={','.join(api_parts)}&fmt=json"
+
+        try:
             # 发送HTTP请求
             response = self.session.get(api_url, timeout=10)
             response.raise_for_status()
 
-            # 解析腾讯财经API返回的数据
-            stock_data = self._parse_api_response(response.text, stock_code)
-            if stock_data:
-                # 缓存数据
-                self.cache.set_stock_data(stock_code, stock_data)
-                return stock_data
+            # 解析批量响应
+            return self._parse_batch_api_response(response.text, stock_codes)
 
         except Exception as e:
-            print(f"获取股票数据失败: {e}")
-            return None
+            print(f"批量获取股票数据失败: {e}")
+            # 返回空结果
+            return {code: None for code in stock_codes}
+
+    def _parse_batch_api_response(self, raw_data: str, requested_codes: List[str]) -> Dict[str, Optional[Dict]]:
+        """解析腾讯财经API的批量JSON响应数据"""
+        result = {}
+
+        try:
+            # 解析JSON响应
+            json_data = json.loads(raw_data)
+
+            for stock_code in requested_codes:
+                # 构建市场前缀+代码的key来查找数据
+                if stock_code.startswith('6'):
+                    market_prefix = "sh"
+                elif stock_code.startswith('0') or stock_code.startswith('3'):
+                    market_prefix = "sz"
+                elif stock_code.isdigit() and len(stock_code) == 5:
+                    market_prefix = "hk"
+                elif stock_code.replace('.', '').isalpha():
+                    market_prefix = "us"
+                else:
+                    market_prefix = "sh"
+
+                key = f"{market_prefix}{stock_code}"
+
+                # 检查是否有我们需要的股票数据
+                if key not in json_data:
+                    print(f"未找到股票数据: {key}")
+                    result[stock_code] = None
+                    continue
+
+                fields = json_data[key]
+
+                if len(fields) < 40:  # 确保有足够的数据字段
+                    print(f"数据字段不完整: {len(fields)}")
+                    result[stock_code] = None
+                    continue
+
+                # 解析股票数据
+                # 新接口字段位置：
+                # [0]: 类型/状态, [1]: 股票名称, [2]: 股票代码
+                # [3]: 当前价格, [4]: 昨收, [5]: 今开, [6]: 成交量
+                # [7-32]: 其他数据, [33]: 最高价, [34]: 最低价
+                stock_data = {
+                    "code": fields[2],  # 股票代码
+                    "name": fields[1],  # 股票名称
+                    "current_price": float(fields[3]),  # 当前价格
+                    "prev_close": float(fields[4]),     # 昨收
+                    "open_price": float(fields[5]),     # 今开
+                    "volume": int(fields[6]) if fields[6] else 0,  # 成交量
+                    "timestamp": datetime.now().isoformat()
+                }
+
+                # 添加可选字段（如果存在）
+                if len(fields) > 33:
+                    stock_data["high_price"] = float(fields[33]) if fields[33] else 0  # 最高价
+                if len(fields) > 34:
+                    stock_data["low_price"] = float(fields[34]) if fields[34] else 0   # 最低价
+
+                # 计算涨跌幅
+                if stock_data["prev_close"] > 0:
+                    change = stock_data["current_price"] - stock_data["prev_close"]
+                    change_percent = (change / stock_data["prev_close"]) * 100
+                    stock_data["change"] = round(change, 2)
+                    stock_data["change_percent"] = round(change_percent, 2)
+                else:
+                    stock_data["change"] = 0
+                    stock_data["change_percent"] = 0
+
+                # 缓存股票名称
+                if self.name_cache and stock_data["name"]:
+                    self.name_cache.set_stock_name(stock_code, stock_data["name"])
+
+                # 缓存数据
+                self.cache.set_stock_data(stock_code, stock_data)
+                result[stock_code] = stock_data
+
+        except (json.JSONDecodeError, ValueError, IndexError, KeyError) as e:
+            print(f"解析批量股票数据时出错: {e}")
+            print(f"原始数据: {raw_data[:200]}...")  # 只打印前200字符用于调试
+            # 返回空结果
+            result = {code: None for code in requested_codes}
+
+        return result
 
     def _parse_api_response(self, raw_data: str, target_code: str) -> Optional[Dict]:
         """解析腾讯财经API的JSON响应数据"""
@@ -407,6 +526,49 @@ class AlertManager:
         self.alerts["last_alert_times"][key] = datetime.now().isoformat()
         self._save_alerts()
         return True
+
+    def can_send_daily_change_alert(self, alert: Dict, change_percent: float) -> bool:
+        """
+        检查是否可以发送今日涨跌提醒
+        逻辑：只有当价格从低于阈值变为高于阈值时才发送提醒
+        """
+        user_id = alert["user_id"]
+        stock_code = alert["stock_code"]
+        threshold = alert["threshold"]
+        threshold_direction = alert.get("threshold_direction", "both")
+
+        key = f"{user_id}_{stock_code}_daily_change"
+
+        # 获取上次的状态
+        last_state = self.alerts.get("alert_states", {}).get(key, {})
+
+        # 当前是否满足触发条件
+        currently_triggered = False
+        if threshold_direction == "both":
+            currently_triggered = abs(change_percent) >= threshold
+        elif threshold_direction == "up":
+            currently_triggered = change_percent >= threshold
+        elif threshold_direction == "down":
+            currently_triggered = change_percent <= -threshold
+
+        # 上次是否已经触发过
+        previously_triggered = last_state.get("triggered", False)
+
+        # 如果当前满足条件且上次不满足，则可以发送提醒
+        can_send = currently_triggered and not previously_triggered
+
+        # 更新状态
+        if not self.alerts.get("alert_states"):
+            self.alerts["alert_states"] = {}
+
+        self.alerts["alert_states"][key] = {
+            "triggered": currently_triggered,
+            "last_change_percent": change_percent,
+            "last_update": datetime.now().isoformat()
+        }
+        self._save_alerts()
+
+        return can_send
 
     async def send_alert_message(self, bot: telegram.Bot, chat_id: int, message: str):
         """异步发送提醒消息"""
@@ -672,16 +834,25 @@ class StockBot:
             raise
 
     async def check_alerts_async(self):
-        """异步检查提醒"""
+        """异步检查提醒（使用批量获取和状态跟踪）"""
         try:
             current_time = datetime.now()
             print(f"[{current_time}] 开始检查提醒，共 {len(self.alert_manager.alerts['alerts'])} 个提醒")
+
+            # 收集需要检查的股票代码（去重）
+            stock_codes_to_check = list(set(alert["stock_code"] for alert in self.alert_manager.alerts["alerts"]))
+            print(f"[{current_time}] 需要检查的股票数量: {len(stock_codes_to_check)}")
+
+            # 批量获取股票数据
+            stock_data_batch = self.fetcher.fetch_batch_stock_data(stock_codes_to_check)
+            print(f"[{current_time}] 成功获取 {len([s for s in stock_data_batch.values() if s is not None])} 个股票数据")
 
             # 收集需要发送提醒的消息
             alerts_to_send = []
 
             for alert in self.alert_manager.alerts["alerts"]:
                 stock_code = alert["stock_code"]
+                stock_data = stock_data_batch.get(stock_code)
 
                 # 检查是否在交易时间内
                 is_trading = is_trading_time(stock_code)
@@ -689,7 +860,6 @@ class StockBot:
                 if not is_trading:
                     continue
 
-                stock_data = self.fetcher.fetch_stock_data(stock_code)
                 if not stock_data:
                     print(f"[{current_time}] 获取 {stock_code} 数据失败")
                     continue
@@ -731,32 +901,13 @@ class StockBot:
                                    f"阈值: {alert['threshold']}%")
 
                 elif alert["alert_type"] == "今日涨跌":
-                    # 今日涨跌幅提醒
+                    # 今日涨跌幅提醒 - 使用新的状态跟踪逻辑
                     change_percent = stock_data.get("change_percent", 0)
-                    threshold_direction = alert.get("threshold_direction", "both")
+                    can_send_daily = self.alert_manager.can_send_daily_change_alert(alert, change_percent)
 
-                    print(f"DEBUG_DAILY_CHANGE: {stock_code} 进入今日涨跌检查")
-                    print(
-                        f"[{current_time}] {stock_code} 检查今日涨跌提醒: 涨跌幅={change_percent}%, 阈值方向={threshold_direction}, 阈值={alert['threshold']}%")
-
-                    # 根据方向判断是否触发提醒
-                    should_trigger = False
-                    if threshold_direction == "both":
-                        should_trigger = abs(change_percent) >= alert["threshold"]
-                        print(
-                            f"[{current_time}] {stock_code} 双向检查: abs({change_percent}) >= {alert['threshold']} = {should_trigger}")
-                    elif threshold_direction == "up":
-                        should_trigger = change_percent >= alert["threshold"]
-                        print(
-                            f"[{current_time}] {stock_code} 上涨检查: {change_percent} >= {alert['threshold']} = {should_trigger}")
-                    elif threshold_direction == "down":
-                        should_trigger = change_percent <= -alert["threshold"]
-                        print(
-                            f"[{current_time}] {stock_code} 下跌检查: {change_percent} <= -{alert['threshold']} = {should_trigger}")
-
-                    if should_trigger:
+                    if can_send_daily:
                         alert_triggered = True
-                        print(f"[{current_time}] {stock_code} 触发提醒条件满足")
+                        threshold_direction = alert.get("threshold_direction", "both")
                         direction = "上涨" if change_percent > 0 else "下跌"
                         direction_desc = {
                             'both': f"今日{direction}幅",
@@ -768,13 +919,18 @@ class StockBot:
                                    f"股票: {stock_data['name']} ({stock_data['code']})\n"
                                    f"{direction_desc}: {abs(change_percent)}%\n"
                                    f"阈值: {alert['threshold']}%")
-                    else:
-                        print(f"[{current_time}] {stock_code} 未满足提醒条件")
 
-                # 检查是否可以发送提醒
+                        print(f"[{current_time}] {stock_code} 今日涨跌提醒触发: 涨跌幅={change_percent}%, 阈值={alert['threshold']}%")
+
+                # 检查是否可以发送提醒（价格变化类型使用时间间隔，今日涨跌类型使用状态跟踪）
                 if alert_triggered:
-                    can_send = self.alert_manager.can_send_alert(alert)
-                    print(f"[{current_time}] {stock_code} 提醒触发，但检查发送权限: {can_send}")
+                    if alert["alert_type"] == "价格变化":
+                        can_send = self.alert_manager.can_send_alert(alert)
+                        print(f"[{current_time}] {stock_code} 价格变化提醒，检查发送权限: {can_send}")
+                    else:  # 今日涨跌类型已经通过状态跟踪检查过了
+                        can_send = True
+                        print(f"[{current_time}] {stock_code} 今日涨跌提醒，状态跟踪通过")
+
                     if can_send:
                         alerts_to_send.append((alert["user_id"], message, stock_code))
                         print(f"[{current_time}] {stock_code} 准备发送提醒消息: {message[:50]}...")
