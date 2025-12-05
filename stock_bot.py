@@ -812,7 +812,7 @@ class StockBot:
         )
 
 
-async def main():
+def main():
     """主函数"""
     # 创建机器人实例
     bot = StockBot(CONFIG["telegram_token"])
@@ -820,9 +820,9 @@ async def main():
     # 启动提醒检查
     bot.start_checking_alerts()
 
-    # 启动机器人
-    await bot.app.run_polling()
+    # 启动机器人（run_polling会处理事件循环）
+    bot.app.run_polling()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
