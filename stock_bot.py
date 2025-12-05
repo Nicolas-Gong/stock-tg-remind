@@ -461,6 +461,7 @@ class AlertManager:
                 change_percent = stock_data.get("change_percent", 0)
                 threshold_direction = alert.get("threshold_direction", "both")
 
+                print(f"DEBUG_DAILY_CHANGE: {stock_code} 进入今日涨跌检查")
                 print(f"[{current_time}] {stock_code} 检查今日涨跌提醒: 涨跌幅={change_percent}%, 阈值方向={threshold_direction}, 阈值={alert['threshold']}%")
 
                 # 根据方向判断是否触发提醒
