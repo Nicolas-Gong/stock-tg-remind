@@ -810,12 +810,19 @@ class StockBot:
             }
             threshold_display = f"{direction_symbols[threshold_direction]}{alert['threshold']}"
 
+            # 格式化创建时间
+            try:
+                created_datetime = datetime.fromisoformat(alert['created_at'])
+                created_time_str = created_datetime.strftime("%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                created_time_str = alert['created_at']  # 如果格式化失败，使用原始值
+
             message += (
                 f"{i + 1}. 股票: {stock_display}\n"
                 f"   类型: {alert['alert_type']}\n"
                 f"   阈值: {threshold_display}%\n"
                 f"   时间间隔: {alert['interval_minutes']}分钟\n"
-                f"   创建时间: {alert['created_at']}\n\n"
+                f"   创建时间: {created_time_str}\n\n"
             )
 
         message += "使用 /remove 命令移除提醒。"
