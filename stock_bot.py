@@ -570,6 +570,45 @@ class AlertManager:
 
         return can_send
 
+    def get_last_price_for_alert(self, alert: Dict) -> Optional[float]:
+        """
+        获取提醒的上次检查价格，用于计算价格变化幅度
+        """
+        user_id = alert["user_id"]
+        stock_code = alert["stock_code"]
+        alert_type = alert["alert_type"]
+
+        key = f"{user_id}_{stock_code}_{alert_type}_last_price"
+        last_price_data = self.alerts.get("price_history", {}).get(key)
+
+        if last_price_data:
+            # 检查是否在有效时间内（稍微超过检查间隔，以防误差）
+            last_update = datetime.fromisoformat(last_price_data["timestamp"])
+            max_age = timedelta(minutes=alert.get("interval_minutes", 5) + 2)  # 多2分钟容错
+            if datetime.now() - last_update < max_age:
+                return last_price_data["price"]
+
+        return None
+
+    def update_last_price_for_alert(self, alert: Dict, current_price: float):
+        """
+        更新提醒的上次检查价格
+        """
+        user_id = alert["user_id"]
+        stock_code = alert["stock_code"]
+        alert_type = alert["alert_type"]
+
+        key = f"{user_id}_{stock_code}_{alert_type}_last_price"
+
+        if not self.alerts.get("price_history"):
+            self.alerts["price_history"] = {}
+
+        self.alerts["price_history"][key] = {
+            "price": current_price,
+            "timestamp": datetime.now().isoformat()
+        }
+        self._save_alerts()
+
     async def send_alert_message(self, bot: telegram.Bot, chat_id: int, message: str):
         """异步发送提醒消息"""
         try:
@@ -837,15 +876,16 @@ class StockBot:
         """异步检查提醒（使用批量获取和状态跟踪）"""
         try:
             current_time = datetime.now()
-            print(f"[{current_time}] 开始检查提醒，共 {len(self.alert_manager.alerts['alerts'])} 个提醒")
+            current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[{current_time_str}] 开始检查提醒，共 {len(self.alert_manager.alerts['alerts'])} 个提醒")
 
             # 收集需要检查的股票代码（去重）
             stock_codes_to_check = list(set(alert["stock_code"] for alert in self.alert_manager.alerts["alerts"]))
-            print(f"[{current_time}] 需要检查的股票数量: {len(stock_codes_to_check)}")
+            print(f"[{current_time_str}] 需要检查的股票数量: {len(stock_codes_to_check)}")
 
             # 批量获取股票数据
             stock_data_batch = self.fetcher.fetch_batch_stock_data(stock_codes_to_check)
-            print(f"[{current_time}] 成功获取 {len([s for s in stock_data_batch.values() if s is not None])} 个股票数据")
+            print(f"[{current_time_str}] 成功获取 {len([s for s in stock_data_batch.values() if s is not None])} 个股票数据")
 
             # 收集需要发送提醒的消息
             alerts_to_send = []
@@ -856,49 +896,77 @@ class StockBot:
 
                 # 检查是否在交易时间内
                 is_trading = is_trading_time(stock_code)
-                print(f"[{current_time}] 检查 {stock_code} 是否在交易时间内: {is_trading}")
+                print(f"[{current_time_str}] 检查 {stock_code} 是否在交易时间内: {is_trading}")
                 if not is_trading:
                     continue
 
                 if not stock_data:
-                    print(f"[{current_time}] 获取 {stock_code} 数据失败")
+                    print(f"[{current_time_str}] 获取 {stock_code} 数据失败")
                     continue
 
                 print(
-                    f"[{current_time}] {stock_code} 价格: {stock_data.get('current_price', 0)}, 涨跌幅: {stock_data.get('change_percent', 0)}%")
+                    f"[{current_time_str}] {stock_code} 价格: {stock_data.get('current_price', 0)}, 涨跌幅: {stock_data.get('change_percent', 0)}%")
 
                 # 检查提醒条件
                 alert_triggered = False
                 message = ""
 
                 if alert["alert_type"] == "价格变化":
-                    # 价格变化提醒
-                    change_percent = stock_data.get("change_percent", 0)
-                    threshold_direction = alert.get("threshold_direction", "both")
+                    # 价格变化提醒 - 计算最近N分钟内的价格变化幅度
+                    current_price = stock_data.get("current_price", 0)
+                    last_price = self.alert_manager.get_last_price_for_alert(alert)
 
-                    # 根据方向判断是否触发提醒
-                    should_trigger = False
-                    if threshold_direction == "both":
-                        should_trigger = abs(change_percent) >= alert["threshold"]
-                    elif threshold_direction == "up":
-                        should_trigger = change_percent >= alert["threshold"]
-                    elif threshold_direction == "down":
-                        should_trigger = change_percent <= -alert["threshold"]
+                    if last_price and last_price > 0:
+                        # 计算价格变化幅度
+                        price_change = current_price - last_price
+                        change_percent = (price_change / last_price) * 100
+                        change_percent = round(change_percent, 2)
 
-                    if should_trigger:
-                        alert_triggered = True
-                        direction = "上涨" if change_percent > 0 else "下跌"
-                        direction_desc = {
-                            'both': f"{direction}幅度",
-                            'up': "涨幅",
-                            'down': "跌幅"
-                        }[threshold_direction]
+                        threshold_direction = alert.get("threshold_direction", "both")
 
-                        message = (f"🔔 股票提醒\n"
-                                   f"股票: {stock_data['name']} ({stock_data['code']})\n"
-                                   f"当前价格: {stock_data['current_price']}\n"
-                                   f"{direction_desc}: {abs(change_percent)}%\n"
-                                   f"阈值: {alert['threshold']}%")
+                        # 根据方向判断是否触发提醒
+                        should_trigger = False
+                        if threshold_direction == "both":
+                            should_trigger = abs(change_percent) >= alert["threshold"]
+                        elif threshold_direction == "up":
+                            should_trigger = change_percent >= alert["threshold"]
+                        elif threshold_direction == "down":
+                            should_trigger = change_percent <= -alert["threshold"]
+
+                        if should_trigger:
+                            alert_triggered = True
+                            direction = "上涨" if change_percent > 0 else "下跌"
+                            direction_desc = {
+                                'both': f"{direction}幅度",
+                                'up': "涨幅",
+                                'down': "跌幅"
+                            }[threshold_direction]
+
+                            # 更新价格历史
+                            self.alert_manager.update_last_price_for_alert(alert, current_price)
+
+                            # 获取更详细的股票信息
+                            prev_close = stock_data.get("prev_close", 0)
+                            daily_change = stock_data.get("change_percent", 0)
+                            volume = stock_data.get("volume", 0)
+                            high_price = stock_data.get("high_price", 0)
+                            low_price = stock_data.get("low_price", 0)
+
+                            alert_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                            message = (f"🔔 价格变化提醒\n"
+                                     f"⏰ 提醒时间: {alert_time}\n"
+                                     f"📈 股票: {stock_data['name']} ({stock_data['code']})\n"
+                                     f"💰 当前价格: ¥{current_price}\n"
+                                     f"📊 {direction_desc}: {abs(change_percent)}% (¥{abs(price_change):.2f})\n"
+                                     f"🎯 阈值: {alert['threshold']}%\n"
+                                     f"📅 昨收: ¥{prev_close} ({'+' if daily_change >= 0 else ''}{daily_change}%)\n"
+                                     f"📈 今日最高: ¥{high_price}\n"
+                                     f"📉 今日最低: ¥{low_price}\n"
+                                     f"📊 成交量: {volume:,} 手")
+                    else:
+                        # 如果没有历史价格，记录当前价格作为基准
+                        self.alert_manager.update_last_price_for_alert(alert, current_price)
 
                 elif alert["alert_type"] == "今日涨跌":
                     # 今日涨跌幅提醒 - 使用新的状态跟踪逻辑
@@ -915,41 +983,57 @@ class StockBot:
                             'down': "今日跌幅"
                         }[threshold_direction]
 
-                        message = (f"🔔 今日涨跌幅提醒\n"
-                                   f"股票: {stock_data['name']} ({stock_data['code']})\n"
-                                   f"{direction_desc}: {abs(change_percent)}%\n"
-                                   f"阈值: {alert['threshold']}%")
+                        # 获取更详细的股票信息
+                        current_price = stock_data.get("current_price", 0)
+                        prev_close = stock_data.get("prev_close", 0)
+                        volume = stock_data.get("volume", 0)
+                        high_price = stock_data.get("high_price", 0)
+                        low_price = stock_data.get("low_price", 0)
+                        price_change = stock_data.get("change", 0)
 
-                        print(f"[{current_time}] {stock_code} 今日涨跌提醒触发: 涨跌幅={change_percent}%, 阈值={alert['threshold']}%")
+                        alert_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                        message = (f"🔔 今日涨跌幅提醒\n"
+                                 f"⏰ 提醒时间: {alert_time}\n"
+                                 f"📈 股票: {stock_data['name']} ({stock_data['code']})\n"
+                                 f"💰 当前价格: ¥{current_price}\n"
+                                 f"📊 {direction_desc}: {abs(change_percent)}% (¥{abs(price_change):.2f})\n"
+                                 f"🎯 阈值: {alert['threshold']}%\n"
+                                 f"📅 昨收: ¥{prev_close}\n"
+                                 f"📈 今日最高: ¥{high_price}\n"
+                                 f"📉 今日最低: ¥{low_price}\n"
+                                 f"📊 成交量: {volume:,} 手")
+
+                        print(f"[{current_time_str}] {stock_code} 今日涨跌提醒触发: 涨跌幅={change_percent}%, 阈值={alert['threshold']}%")
 
                 # 检查是否可以发送提醒（价格变化类型使用时间间隔，今日涨跌类型使用状态跟踪）
                 if alert_triggered:
                     if alert["alert_type"] == "价格变化":
                         can_send = self.alert_manager.can_send_alert(alert)
-                        print(f"[{current_time}] {stock_code} 价格变化提醒，检查发送权限: {can_send}")
+                        print(f"[{current_time_str}] {stock_code} 价格变化提醒，检查发送权限: {can_send}")
                     else:  # 今日涨跌类型已经通过状态跟踪检查过了
                         can_send = True
-                        print(f"[{current_time}] {stock_code} 今日涨跌提醒，状态跟踪通过")
+                        print(f"[{current_time_str}] {stock_code} 今日涨跌提醒，状态跟踪通过")
 
                     if can_send:
                         alerts_to_send.append((alert["user_id"], message, stock_code))
-                        print(f"[{current_time}] {stock_code} 准备发送提醒消息: {message[:50]}...")
+                        print(f"[{current_time_str}] {stock_code} 准备发送提醒消息: {message[:50]}...")
                     else:
-                        print(f"[{current_time}] {stock_code} 因时间间隔限制跳过提醒")
+                        print(f"[{current_time_str}] {stock_code} 因时间间隔限制跳过提醒")
 
             # 批量发送提醒消息
             if alerts_to_send:
-                print(f"[{current_time}] 开始批量发送 {len(alerts_to_send)} 条提醒消息")
+                print(f"[{current_time_str}] 开始批量发送 {len(alerts_to_send)} 条提醒消息")
                 for chat_id, message, stock_code in alerts_to_send:
                     try:
                         success = await self.alert_manager.send_alert_message(self.bot, chat_id, message)
                         if success:
-                            print(f"[{current_time}] {stock_code} 提醒消息发送成功")
+                            print(f"[{current_time_str}] {stock_code} 提醒消息发送成功")
                         else:
-                            print(f"[{current_time}] {stock_code} 提醒消息发送失败")
+                            print(f"[{current_time_str}] {stock_code} 提醒消息发送失败")
                     except Exception as e:
-                        print(f"[{current_time}] {stock_code} 发送提醒异常: {e}")
-                print(f"[{current_time}] 批量发送完成")
+                        print(f"[{current_time_str}] {stock_code} 发送提醒异常: {e}")
+                print(f"[{current_time_str}] 批量发送完成")
 
         except Exception as e:
             print(f"异步检查提醒时出错: {e}")
