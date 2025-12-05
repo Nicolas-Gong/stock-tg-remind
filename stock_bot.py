@@ -29,8 +29,8 @@ from telegram.ext import (
     filters,
 )
 
-# 配置
-CONFIG = {
+# 默认配置
+DEFAULT_CONFIG = {
     "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN",
     "data_file": "stock_data.json",
     "cache_file": "stock_cache.json",
@@ -39,6 +39,29 @@ CONFIG = {
     "timeout": 10,  # 请求超时时间
     "cache_expiry_seconds": 6,  # 缓存过期时间（秒）
 }
+
+# 从配置文件加载配置
+def load_config():
+    """从config.json加载配置"""
+    config_file = "config.json"
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                user_config = json.load(f)
+            # 合并用户配置和默认配置
+            config = DEFAULT_CONFIG.copy()
+            config.update(user_config)
+            return config
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"加载配置文件失败: {e}")
+            print("使用默认配置...")
+            return DEFAULT_CONFIG
+    else:
+        print("未找到config.json文件，使用默认配置...")
+        return DEFAULT_CONFIG
+
+# 全局配置
+CONFIG = load_config()
 
 def is_trading_time(stock_code: str) -> bool:
     """

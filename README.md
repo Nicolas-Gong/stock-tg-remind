@@ -44,11 +44,21 @@ pip install -r requirements.txt
   "telegram_token": "你的机器人令牌",
   "data_file": "stock_data.json",
   "cache_file": "stock_cache.json",
+  "name_cache_file": "stock_names.json",
   "check_interval": 60,
   "timeout": 10,
   "cache_expiry_seconds": 6
 }
 ```
+
+**配置说明：**
+- `telegram_token`：从BotFather获取的机器人令牌（必需）
+- `data_file`：提醒数据存储文件
+- `cache_file`：股票价格数据缓存文件
+- `name_cache_file`：股票名称映射缓存文件
+- `check_interval`：检查提醒的时间间隔（秒）
+- `timeout`：请求超时时间（秒）
+- `cache_expiry_seconds`：股票数据缓存过期时间（秒）
 
 ### 5. 启动机器人
 
