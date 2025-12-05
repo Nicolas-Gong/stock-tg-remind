@@ -210,23 +210,25 @@ class StockDataFetcher:
         if cached_data:
             return cached_data
 
-        # 从腾讯财经API获取数据（支持批量请求优化）
+        # 从腾讯财经API获取数据（使用新的JSON接口）
         try:
-            # 构建API URL（单个请求）
-            # 支持多市场：上海(sh)、深圳(sz)、港股(hk)、美股(us)
+            # 构建API URL（支持多市场）
+            # 新接口格式：https://sqt.gtimg.cn/?q=sh000001,sz399001&fmt=json
             if stock_code.startswith('6'):
-                api_url = f"http://qt.gtimg.cn/q=sh{stock_code}"
+                market_prefix = "sh"
             elif stock_code.startswith('0') or stock_code.startswith('3'):
-                api_url = f"http://qt.gtimg.cn/q=sz{stock_code}"
+                market_prefix = "sz"
             elif stock_code.isdigit() and len(stock_code) == 5:
                 # 港股代码（5位数字）
-                api_url = f"http://qt.gtimg.cn/q=hk{stock_code}"
+                market_prefix = "hk"
             elif stock_code.replace('.', '').isalpha():
                 # 美股代码（字母）
-                api_url = f"http://qt.gtimg.cn/q=us{stock_code}"
+                market_prefix = "us"
             else:
                 # 默认当作上海股票
-                api_url = f"http://qt.gtimg.cn/q=sh{stock_code}"
+                market_prefix = "sh"
+
+            api_url = f"https://sqt.gtimg.cn/?q={market_prefix}{stock_code}&fmt=json"
 
             # 发送HTTP请求
             response = self.session.get(api_url, timeout=10)
@@ -244,70 +246,77 @@ class StockDataFetcher:
             return None
 
     def _parse_api_response(self, raw_data: str, target_code: str) -> Optional[Dict]:
-        """解析腾讯财经API的批量响应数据"""
-        if not raw_data or 'v_' not in raw_data:
-            print(f"无效的API响应: {raw_data}")
+        """解析腾讯财经API的JSON响应数据"""
+        try:
+            # 解析JSON响应
+            json_data = json.loads(raw_data)
+
+            # 构建市场前缀+代码的key来查找数据
+            if target_code.startswith('6'):
+                market_prefix = "sh"
+            elif target_code.startswith('0') or target_code.startswith('3'):
+                market_prefix = "sz"
+            elif target_code.isdigit() and len(target_code) == 5:
+                market_prefix = "hk"
+            elif target_code.replace('.', '').isalpha():
+                market_prefix = "us"
+            else:
+                market_prefix = "sh"
+
+            key = f"{market_prefix}{target_code}"
+
+            # 检查是否有我们需要的股票数据
+            if key not in json_data:
+                print(f"未找到股票数据: {key}")
+                return None
+
+            fields = json_data[key]
+
+            if len(fields) < 40:  # 确保有足够的数据字段
+                print(f"数据字段不完整: {len(fields)}")
+                return None
+
+            # 解析股票数据
+            # 新接口字段位置：
+            # [0]: 类型/状态, [1]: 股票名称, [2]: 股票代码
+            # [3]: 当前价格, [4]: 昨收, [5]: 今开, [6]: 成交量
+            # [7-32]: 其他数据, [33]: 最高价, [34]: 最低价
+            stock_data = {
+                "code": fields[2],  # 股票代码
+                "name": fields[1],  # 股票名称
+                "current_price": float(fields[3]),  # 当前价格
+                "prev_close": float(fields[4]),     # 昨收
+                "open_price": float(fields[5]),     # 今开
+                "volume": int(fields[6]) if fields[6] else 0,  # 成交量
+                "timestamp": datetime.now().isoformat()
+            }
+
+            # 添加可选字段（如果存在）
+            if len(fields) > 33:
+                stock_data["high_price"] = float(fields[33]) if fields[33] else 0  # 最高价
+            if len(fields) > 34:
+                stock_data["low_price"] = float(fields[34]) if fields[34] else 0   # 最低价
+
+            # 计算涨跌幅
+            if stock_data["prev_close"] > 0:
+                change = stock_data["current_price"] - stock_data["prev_close"]
+                change_percent = (change / stock_data["prev_close"]) * 100
+                stock_data["change"] = round(change, 2)
+                stock_data["change_percent"] = round(change_percent, 2)
+            else:
+                stock_data["change"] = 0
+                stock_data["change_percent"] = 0
+
+            # 缓存股票名称
+            if self.name_cache and stock_data["name"]:
+                self.name_cache.set_stock_name(target_code, stock_data["name"])
+
+            return stock_data
+
+        except (json.JSONDecodeError, ValueError, IndexError, KeyError) as e:
+            print(f"解析股票数据时出错: {e}")
+            print(f"原始数据: {raw_data[:200]}...")  # 只打印前200字符用于调试
             return None
-
-        # 腾讯财经API支持批量请求，返回多行数据
-        # 每行格式：v_{market}{code}="data"\n
-        lines = raw_data.strip().split('\n')
-
-        for line in lines:
-            if not line.startswith('v_'):
-                continue
-
-            try:
-                # 提取股票代码和数据
-                # 格式：v_sh600519="1~茅台~600519~..." 或 v_usAAPL="200~Apple~AAPL~..."
-                parts = line.split('=', 1)
-                if len(parts) != 2:
-                    continue
-
-                code_part = parts[0][2:]  # 去掉'v_'前缀
-                data_str = parts[1].strip('";')
-
-                # 检查是否是我们需要的股票代码
-                if target_code in code_part:
-                    fields = data_str.split('~')
-
-                    if len(fields) < 50:  # 确保有足够的数据字段
-                        print(f"数据字段不完整: {len(fields)}")
-                        continue
-
-                    # 解析股票数据
-                    stock_data = {
-                        "code": fields[2],  # 股票代码
-                        "name": fields[1],  # 股票名称
-                        "current_price": float(fields[3]),  # 当前价格
-                        "prev_close": float(fields[4]),     # 昨收
-                        "open_price": float(fields[5]),     # 今开
-                        "high_price": float(fields[33]) if len(fields) > 33 and fields[33] else 0,    # 最高价
-                        "low_price": float(fields[34]) if len(fields) > 34 and fields[34] else 0,     # 最低价
-                        "timestamp": datetime.now().isoformat()
-                    }
-
-                    # 计算涨跌幅
-                    if stock_data["prev_close"] > 0:
-                        change = stock_data["current_price"] - stock_data["prev_close"]
-                        change_percent = (change / stock_data["prev_close"]) * 100
-                        stock_data["change"] = round(change, 2)
-                        stock_data["change_percent"] = round(change_percent, 2)
-                    else:
-                        stock_data["change"] = 0
-                        stock_data["change_percent"] = 0
-
-                    # 缓存股票名称
-                    if self.name_cache and stock_data["name"]:
-                        self.name_cache.set_stock_name(target_code, stock_data["name"])
-
-                    return stock_data
-
-            except (ValueError, IndexError) as e:
-                print(f"解析股票数据时出错: {e}")
-                continue
-
-        return None
 
 # 提醒管理
 class AlertManager:
