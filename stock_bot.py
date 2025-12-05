@@ -415,135 +415,11 @@ class AlertManager:
             print(f"发送提醒失败: {e}")
             return False
 
-    def check_alerts(self, fetcher: StockDataFetcher, bot: telegram.Bot):
-        """检查所有提醒并发送通知"""
-        current_time = datetime.now()
-        print(f"[{current_time}] 开始检查提醒，共 {len(self.alerts['alerts'])} 个提醒")
-
-        # 收集需要发送提醒的消息
-        alerts_to_send = []
-
-        for alert in self.alerts["alerts"]:
-            stock_code = alert["stock_code"]
-
-            # 检查是否在交易时间内
-            is_trading = is_trading_time(stock_code)
-            print(f"[{current_time}] 检查 {stock_code} 是否在交易时间内: {is_trading}")
-            if not is_trading:
-                continue
-
-            stock_data = fetcher.fetch_stock_data(stock_code)
-            if not stock_data:
-                print(f"[{current_time}] 获取 {stock_code} 数据失败")
-                continue
-
-            print(f"[{current_time}] {stock_code} 价格: {stock_data.get('current_price', 0)}, 涨跌幅: {stock_data.get('change_percent', 0)}%")
-
-            # 检查提醒条件
-            alert_triggered = False
-            message = ""
-
-            if alert["alert_type"] == "价格变化":
-                # 价格变化提醒
-                change_percent = stock_data.get("change_percent", 0)
-                threshold_direction = alert.get("threshold_direction", "both")
-
-                # 根据方向判断是否触发提醒
-                should_trigger = False
-                if threshold_direction == "both":
-                    should_trigger = abs(change_percent) >= alert["threshold"]
-                elif threshold_direction == "up":
-                    should_trigger = change_percent >= alert["threshold"]
-                elif threshold_direction == "down":
-                    should_trigger = change_percent <= -alert["threshold"]
-
-                if should_trigger:
-                    alert_triggered = True
-                    direction = "上涨" if change_percent > 0 else "下跌"
-                    direction_desc = {
-                        'both': f"{direction}幅度",
-                        'up': "涨幅",
-                        'down': "跌幅"
-                    }[threshold_direction]
-
-                    message = (f"🔔 股票提醒\n"
-                              f"股票: {stock_data['name']} ({stock_data['code']})\n"
-                              f"当前价格: {stock_data['current_price']}\n"
-                              f"{direction_desc}: {abs(change_percent)}%\n"
-                              f"阈值: {alert['threshold']}%")
-
-            elif alert["alert_type"] == "今日涨跌":
-                # 今日涨跌幅提醒
-                change_percent = stock_data.get("change_percent", 0)
-                threshold_direction = alert.get("threshold_direction", "both")
-
-                print(f"DEBUG_DAILY_CHANGE: {stock_code} 进入今日涨跌检查")
-                print(f"[{current_time}] {stock_code} 检查今日涨跌提醒: 涨跌幅={change_percent}%, 阈值方向={threshold_direction}, 阈值={alert['threshold']}%")
-
-                # 根据方向判断是否触发提醒
-                should_trigger = False
-                if threshold_direction == "both":
-                    should_trigger = abs(change_percent) >= alert["threshold"]
-                    print(f"[{current_time}] {stock_code} 双向检查: abs({change_percent}) >= {alert['threshold']} = {should_trigger}")
-                elif threshold_direction == "up":
-                    should_trigger = change_percent >= alert["threshold"]
-                    print(f"[{current_time}] {stock_code} 上涨检查: {change_percent} >= {alert['threshold']} = {should_trigger}")
-                elif threshold_direction == "down":
-                    should_trigger = change_percent <= -alert["threshold"]
-                    print(f"[{current_time}] {stock_code} 下跌检查: {change_percent} <= -{alert['threshold']} = {should_trigger}")
-
-                if should_trigger:
-                    alert_triggered = True
-                    print(f"[{current_time}] {stock_code} 触发提醒条件满足")
-                    direction = "上涨" if change_percent > 0 else "下跌"
-                    direction_desc = {
-                        'both': f"今日{direction}幅",
-                        'up': "今日涨幅",
-                        'down': "今日跌幅"
-                    }[threshold_direction]
-
-                    message = (f"🔔 今日涨跌幅提醒\n"
-                              f"股票: {stock_data['name']} ({stock_data['code']})\n"
-                              f"{direction_desc}: {abs(change_percent)}%\n"
-                              f"阈值: {alert['threshold']}%")
-                else:
-                    print(f"[{current_time}] {stock_code} 未满足提醒条件")
-
-            # 检查是否可以发送提醒
-            if alert_triggered:
-                can_send = self.can_send_alert(alert)
-                print(f"[{current_time}] {stock_code} 提醒触发，但检查发送权限: {can_send}")
-                if can_send:
-                    alerts_to_send.append((alert["user_id"], message, stock_code))
-                    print(f"[{current_time}] {stock_code} 准备发送提醒消息: {message[:50]}...")
-                else:
-                    print(f"[{current_time}] {stock_code} 因时间间隔限制跳过提醒")
-
-        # 批量发送提醒消息
-        if alerts_to_send:
-            print(f"[{current_time}] 开始批量发送 {len(alerts_to_send)} 条提醒消息")
-            import asyncio
-
-            async def send_all_alerts():
-                for chat_id, message, stock_code in alerts_to_send:
-                    try:
-                        success = await self.send_alert_message(bot, chat_id, message)
-                        if success:
-                            print(f"[{current_time}] {stock_code} 提醒消息发送成功")
-                        else:
-                            print(f"[{current_time}] {stock_code} 提醒消息发送失败")
-                    except Exception as e:
-                        print(f"[{current_time}] {stock_code} 发送提醒异常: {e}")
-
-            # 创建新的事件循环来发送所有消息
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(send_all_alerts())
-                loop.close()
-                print(f"[{current_time}] 批量发送完成")
-            except Exception as e:
-                print(f"[{current_time}] 批量发送过程中出错: {e}")
+    def check_alerts_sync(self, fetcher: StockDataFetcher):
+        """同步检查提醒并返回需要发送的消息列表（已废弃，使用异步版本）"""
+        # 此方法已废弃，保留用于向后兼容
+        print("警告：check_alerts_sync方法已废弃，请使用异步的check_alerts_async方法")
+        return []
 
 # 机器人命令处理
 class StockBot:
@@ -788,22 +664,143 @@ class StockBot:
                 print("请先停止其他机器人实例，然后重新启动")
             raise
 
+    async def check_alerts_async(self):
+        """异步检查提醒"""
+        try:
+            current_time = datetime.now()
+            print(f"[{current_time}] 开始检查提醒，共 {len(self.alert_manager.alerts['alerts'])} 个提醒")
+
+            # 收集需要发送提醒的消息
+            alerts_to_send = []
+
+            for alert in self.alert_manager.alerts["alerts"]:
+                stock_code = alert["stock_code"]
+
+                # 检查是否在交易时间内
+                is_trading = is_trading_time(stock_code)
+                print(f"[{current_time}] 检查 {stock_code} 是否在交易时间内: {is_trading}")
+                if not is_trading:
+                    continue
+
+                stock_data = self.fetcher.fetch_stock_data(stock_code)
+                if not stock_data:
+                    print(f"[{current_time}] 获取 {stock_code} 数据失败")
+                    continue
+
+                print(f"[{current_time}] {stock_code} 价格: {stock_data.get('current_price', 0)}, 涨跌幅: {stock_data.get('change_percent', 0)}%")
+
+                # 检查提醒条件
+                alert_triggered = False
+                message = ""
+
+                if alert["alert_type"] == "价格变化":
+                    # 价格变化提醒
+                    change_percent = stock_data.get("change_percent", 0)
+                    threshold_direction = alert.get("threshold_direction", "both")
+
+                    # 根据方向判断是否触发提醒
+                    should_trigger = False
+                    if threshold_direction == "both":
+                        should_trigger = abs(change_percent) >= alert["threshold"]
+                    elif threshold_direction == "up":
+                        should_trigger = change_percent >= alert["threshold"]
+                    elif threshold_direction == "down":
+                        should_trigger = change_percent <= -alert["threshold"]
+
+                    if should_trigger:
+                        alert_triggered = True
+                        direction = "上涨" if change_percent > 0 else "下跌"
+                        direction_desc = {
+                            'both': f"{direction}幅度",
+                            'up': "涨幅",
+                            'down': "跌幅"
+                        }[threshold_direction]
+
+                        message = (f"🔔 股票提醒\n"
+                                  f"股票: {stock_data['name']} ({stock_data['code']})\n"
+                                  f"当前价格: {stock_data['current_price']}\n"
+                                  f"{direction_desc}: {abs(change_percent)}%\n"
+                                  f"阈值: {alert['threshold']}%")
+
+                elif alert["alert_type"] == "今日涨跌":
+                    # 今日涨跌幅提醒
+                    change_percent = stock_data.get("change_percent", 0)
+                    threshold_direction = alert.get("threshold_direction", "both")
+
+                    print(f"DEBUG_DAILY_CHANGE: {stock_code} 进入今日涨跌检查")
+                    print(f"[{current_time}] {stock_code} 检查今日涨跌提醒: 涨跌幅={change_percent}%, 阈值方向={threshold_direction}, 阈值={alert['threshold']}%")
+
+                    # 根据方向判断是否触发提醒
+                    should_trigger = False
+                    if threshold_direction == "both":
+                        should_trigger = abs(change_percent) >= alert["threshold"]
+                        print(f"[{current_time}] {stock_code} 双向检查: abs({change_percent}) >= {alert['threshold']} = {should_trigger}")
+                    elif threshold_direction == "up":
+                        should_trigger = change_percent >= alert["threshold"]
+                        print(f"[{current_time}] {stock_code} 上涨检查: {change_percent} >= {alert['threshold']} = {should_trigger}")
+                    elif threshold_direction == "down":
+                        should_trigger = change_percent <= -alert["threshold"]
+                        print(f"[{current_time}] {stock_code} 下跌检查: {change_percent} <= -{alert['threshold']} = {should_trigger}")
+
+                    if should_trigger:
+                        alert_triggered = True
+                        print(f"[{current_time}] {stock_code} 触发提醒条件满足")
+                        direction = "上涨" if change_percent > 0 else "下跌"
+                        direction_desc = {
+                            'both': f"今日{direction}幅",
+                            'up': "今日涨幅",
+                            'down': "今日跌幅"
+                        }[threshold_direction]
+
+                        message = (f"🔔 今日涨跌幅提醒\n"
+                                  f"股票: {stock_data['name']} ({stock_data['code']})\n"
+                                  f"{direction_desc}: {abs(change_percent)}%\n"
+                                  f"阈值: {alert['threshold']}%")
+                    else:
+                        print(f"[{current_time}] {stock_code} 未满足提醒条件")
+
+                # 检查是否可以发送提醒
+                if alert_triggered:
+                    can_send = self.alert_manager.can_send_alert(alert)
+                    print(f"[{current_time}] {stock_code} 提醒触发，但检查发送权限: {can_send}")
+                    if can_send:
+                        alerts_to_send.append((alert["user_id"], message, stock_code))
+                        print(f"[{current_time}] {stock_code} 准备发送提醒消息: {message[:50]}...")
+                    else:
+                        print(f"[{current_time}] {stock_code} 因时间间隔限制跳过提醒")
+
+            # 批量发送提醒消息
+            if alerts_to_send:
+                print(f"[{current_time}] 开始批量发送 {len(alerts_to_send)} 条提醒消息")
+                for chat_id, message, stock_code in alerts_to_send:
+                    try:
+                        success = await self.alert_manager.send_alert_message(self.bot, chat_id, message)
+                        if success:
+                            print(f"[{current_time}] {stock_code} 提醒消息发送成功")
+                        else:
+                            print(f"[{current_time}] {stock_code} 提醒消息发送失败")
+                    except Exception as e:
+                        print(f"[{current_time}] {stock_code} 发送提醒异常: {e}")
+                print(f"[{current_time}] 批量发送完成")
+
+        except Exception as e:
+            print(f"异步检查提醒时出错: {e}")
+
+    async def check_alerts_job(self, context):
+        """Job队列调用的提醒检查函数"""
+        await self.check_alerts_async()
+
     def start_checking_alerts(self):
         """启动定期检查提醒"""
-        def check_alerts_loop():
-            while True:
-                try:
-                    print(f"检查提醒... {datetime.now()}")
-                    self.alert_manager.check_alerts(self.fetcher, self.bot)
-                except Exception as e:
-                    print(f"检查提醒时出错: {e}")
-                time.sleep(CONFIG["check_interval"])
+        # 使用Telegram Application的job_queue来处理定期任务
+        self.app.job_queue.run_repeating(
+            self.check_alerts_job,
+            interval=CONFIG["check_interval"],
+            first=10  # 10秒后开始第一次检查
+        )
 
-        # 启动后台线程
-        alert_thread = threading.Thread(target=check_alerts_loop, daemon=True)
-        alert_thread.start()
-
-if __name__ == "__main__":
+async def main():
+    """主函数"""
     # 创建机器人实例
     bot = StockBot(CONFIG["telegram_token"])
 
@@ -811,4 +808,7 @@ if __name__ == "__main__":
     bot.start_checking_alerts()
 
     # 启动机器人
-    bot.start_polling()
+    await bot.app.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
