@@ -493,15 +493,22 @@ class AlertManager:
                     print(f"[{current_time}] {stock_code} 未满足提醒条件")
 
             # 检查是否可以发送提醒
-            if alert_triggered and self.can_send_alert(alert):
-                try:
-                    bot.send_message(
-                        chat_id=alert["user_id"],
-                        text=message,
-                        parse_mode=telegram.constants.ParseMode.HTML
-                    )
-                except Exception as e:
-                    print(f"发送提醒失败: {e}")
+            if alert_triggered:
+                can_send = self.can_send_alert(alert)
+                print(f"[{current_time}] {stock_code} 提醒触发，但检查发送权限: {can_send}")
+                if can_send:
+                    try:
+                        print(f"[{current_time}] {stock_code} 发送提醒消息: {message[:50]}...")
+                        bot.send_message(
+                            chat_id=alert["user_id"],
+                            text=message,
+                            parse_mode=telegram.constants.ParseMode.HTML
+                        )
+                        print(f"[{current_time}] {stock_code} 提醒消息发送成功")
+                    except Exception as e:
+                        print(f"[{current_time}] {stock_code} 发送提醒失败: {e}")
+                else:
+                    print(f"[{current_time}] {stock_code} 因时间间隔限制跳过提醒")
 
 # 机器人命令处理
 class StockBot:
