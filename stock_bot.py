@@ -1289,10 +1289,13 @@ class StockBot:
         )
 
 
-def main():
+async def main():
     """主函数"""
     # 创建机器人实例
     bot = StockBot(CONFIG["telegram_token"])
+
+    # 设置Bot Commands
+    await bot.setup_bot_commands()
 
     # 启动提醒检查
     bot.start_checking_alerts()
@@ -1302,4 +1305,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
