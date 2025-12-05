@@ -461,17 +461,23 @@ class AlertManager:
                 change_percent = stock_data.get("change_percent", 0)
                 threshold_direction = alert.get("threshold_direction", "both")
 
+                print(f"[{current_time}] {stock_code} 检查今日涨跌提醒: 涨跌幅={change_percent}%, 阈值方向={threshold_direction}, 阈值={alert['threshold']}%")
+
                 # 根据方向判断是否触发提醒
                 should_trigger = False
                 if threshold_direction == "both":
                     should_trigger = abs(change_percent) >= alert["threshold"]
+                    print(f"[{current_time}] {stock_code} 双向检查: abs({change_percent}) >= {alert['threshold']} = {should_trigger}")
                 elif threshold_direction == "up":
                     should_trigger = change_percent >= alert["threshold"]
+                    print(f"[{current_time}] {stock_code} 上涨检查: {change_percent} >= {alert['threshold']} = {should_trigger}")
                 elif threshold_direction == "down":
                     should_trigger = change_percent <= -alert["threshold"]
+                    print(f"[{current_time}] {stock_code} 下跌检查: {change_percent} <= -{alert['threshold']} = {should_trigger}")
 
                 if should_trigger:
                     alert_triggered = True
+                    print(f"[{current_time}] {stock_code} 触发提醒条件满足")
                     direction = "上涨" if change_percent > 0 else "下跌"
                     direction_desc = {
                         'both': f"今日{direction}幅",
@@ -483,6 +489,8 @@ class AlertManager:
                               f"股票: {stock_data['name']} ({stock_data['code']})\n"
                               f"{direction_desc}: {abs(change_percent)}%\n"
                               f"阈值: {alert['threshold']}%")
+                else:
+                    print(f"[{current_time}] {stock_code} 未满足提醒条件")
 
             # 检查是否可以发送提醒
             if alert_triggered and self.can_send_alert(alert):
