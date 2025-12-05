@@ -12,7 +12,9 @@ Telegram股票价格提醒机器人
 """
 import asyncio
 import json
+import logging
 import os
+import sys
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -28,6 +30,17 @@ from telegram.ext import (
     filters,
 )
 
+# 设置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('stock_bot.log', encoding='utf-8')
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # 默认配置
 DEFAULT_CONFIG = {
     "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN",
@@ -36,7 +49,7 @@ DEFAULT_CONFIG = {
     "name_cache_file": "stock_names.json",  # 股票名称缓存文件
     "check_interval": 60,  # 检查间隔（秒）
     "timeout": 10,  # 请求超时时间
-    # 移除缓存过期时间配置，因为批量获取机制使得缓存过期检查不再必要
+    "cache_expiry_seconds": 30,  # 缓存过期时间（秒）
 }
 
 
@@ -53,11 +66,11 @@ def load_config():
             config.update(user_config)
             return config
         except (json.JSONDecodeError, IOError) as e:
-            print(f"加载配置文件失败: {e}")
-            print("使用默认配置...")
+            logger.error(f"加载配置文件失败: {e}")
+            logger.info("使用默认配置...")
             return DEFAULT_CONFIG
     else:
-        print("未找到config.json文件，使用默认配置...")
+        logger.warning("未找到config.json文件，使用默认配置...")
         return DEFAULT_CONFIG
 
 
@@ -100,19 +113,14 @@ def is_trading_time(stock_code: str) -> bool:
             (afternoon_start <= current_time <= afternoon_end)
 
     elif stock_code.replace('.', '').isalpha():
-        # 美股：美东时间 9:30-16:00，转换为北京时间
-        # 北京时间：21:30(今) - 04:00(明) 或 22:30(今) - 05:00(明)
-        # 这里简化为北京时间 21:30 到次日 04:00
-        us_start_evening = datetime.strptime("21:30", "%H:%M").time()
-        us_end_night = datetime.strptime("23:59:59", "%H:%M:%S").time()
-        us_start_next_morning = datetime.strptime("00:00:00", "%H:%M:%S").time()
-        us_end_next_morning = datetime.strptime("04:00", "%H:%M").time()
+        # 美股：美东时间 9:30-16:00，转换为北京时间 21:30(今晚) - 04:00(明早)
+        # 北京时间：21:30到23:59:59 或 00:00:00到04:00
+        us_start = datetime.strptime("21:30", "%H:%M").time()
+        us_end = datetime.strptime("04:00", "%H:%M").time()
 
-        # 如果是晚上21:30到23:59，或是凌晨00:00到04:00
-        if (current_time >= us_start_evening and current_time <= us_end_night) or \
-                (current_time >= us_start_next_morning and current_time <= us_end_next_morning):
+        # 美股交易跨天，需要特殊处理
+        if current_time >= us_start or current_time <= us_end:
             return True
-
         return False
 
     else:
@@ -142,7 +150,7 @@ class StockNameCache:
             with open(self.name_cache_file, 'w', encoding='utf-8') as f:
                 json.dump(self.name_cache, f, indent=2, ensure_ascii=False)
         except IOError as e:
-            print(f"保存名称缓存失败: {e}")
+            logger.error(f"保存名称缓存失败: {e}")
 
     def get_stock_name(self, stock_code: str) -> Optional[str]:
         """获取股票名称"""
@@ -177,14 +185,27 @@ class StockCache:
             with open(self.cache_file, 'w', encoding='utf-8') as f:
                 json.dump(self.cache, f, indent=2, ensure_ascii=False)
         except IOError as e:
-            print(f"保存缓存失败: {e}")
+            logger.error(f"保存缓存失败: {e}")
 
     def get_stock_data(self, stock_code: str) -> Optional[Dict]:
         """获取股票数据（优先从缓存）"""
         if stock_code in self.cache:
             cached_data = self.cache[stock_code]
-            # 直接返回缓存中的数据，移除过期检查
-            return cached_data['data']
+            # 检查缓存是否过期
+            timestamp = cached_data.get('timestamp')
+            if timestamp:
+                try:
+                    cached_time = datetime.fromisoformat(timestamp)
+                    if datetime.now() - cached_time < timedelta(seconds=CONFIG["cache_expiry_seconds"]):
+                        return cached_data['data']
+                    else:
+                        # 缓存过期，删除
+                        del self.cache[stock_code]
+                        self._save_cache()
+                except (ValueError, TypeError):
+                    # 时间戳格式错误，删除缓存
+                    del self.cache[stock_code]
+                    self._save_cache()
         return None
 
     def set_stock_data(self, stock_code: str, data: Dict):
@@ -280,122 +301,38 @@ class StockDataFetcher:
             return self._parse_batch_api_response(response.text, stock_codes)
 
         except Exception as e:
-            print(f"批量获取股票数据失败: {e}")
+            logger.error(f"批量获取股票数据失败: {e}")
             # 返回空结果
             return {code: None for code in stock_codes}
 
-    def _parse_batch_api_response(self, raw_data: str, requested_codes: List[str]) -> Dict[str, Optional[Dict]]:
-        """解析腾讯财经API的批量JSON响应数据"""
-        result = {}
+    def _get_market_prefix(self, stock_code: str) -> str:
+        """根据股票代码获取市场前缀"""
+        if stock_code.startswith('6'):
+            return "sh"
+        elif stock_code.startswith('0') or stock_code.startswith('3'):
+            return "sz"
+        elif stock_code.isdigit() and len(stock_code) == 5:
+            return "hk"
+        elif stock_code.replace('.', '').isalpha():
+            return "us"
+        else:
+            return "sh"
 
+    def _parse_single_stock_data(self, json_data: Dict, stock_code: str) -> Optional[Dict]:
+        """解析单个股票的数据"""
         try:
-            # 解析JSON响应
-            json_data = json.loads(raw_data)
-
-            for stock_code in requested_codes:
-                # 构建市场前缀+代码的key来查找数据
-                if stock_code.startswith('6'):
-                    market_prefix = "sh"
-                elif stock_code.startswith('0') or stock_code.startswith('3'):
-                    market_prefix = "sz"
-                elif stock_code.isdigit() and len(stock_code) == 5:
-                    market_prefix = "hk"
-                elif stock_code.replace('.', '').isalpha():
-                    market_prefix = "us"
-                else:
-                    market_prefix = "sh"
-
-                key = f"{market_prefix}{stock_code}"
-
-                # 检查是否有我们需要的股票数据
-                if key not in json_data:
-                    print(f"未找到股票数据: {key}")
-                    result[stock_code] = None
-                    continue
-
-                fields = json_data[key]
-
-                if len(fields) < 40:  # 确保有足够的数据字段
-                    print(f"数据字段不完整: {len(fields)}")
-                    result[stock_code] = None
-                    continue
-
-                # 解析股票数据
-                # 新接口字段位置：
-                # [0]: 类型/状态, [1]: 股票名称, [2]: 股票代码
-                # [3]: 当前价格, [4]: 昨收, [5]: 今开, [6]: 成交量
-                # [7-32]: 其他数据, [33]: 最高价, [34]: 最低价
-                stock_data = {
-                    "code": fields[2],  # 股票代码
-                    "name": fields[1],  # 股票名称
-                    "current_price": float(fields[3]),  # 当前价格
-                    "prev_close": float(fields[4]),     # 昨收
-                    "open_price": float(fields[5]),     # 今开
-                    "volume": int(fields[6]) if fields[6] else 0,  # 成交量
-                    "timestamp": datetime.now().isoformat()
-                }
-
-                # 添加可选字段（如果存在）
-                if len(fields) > 33:
-                    stock_data["high_price"] = float(fields[33]) if fields[33] else 0  # 最高价
-                if len(fields) > 34:
-                    stock_data["low_price"] = float(fields[34]) if fields[34] else 0   # 最低价
-
-                # 计算涨跌幅
-                if stock_data["prev_close"] > 0:
-                    change = stock_data["current_price"] - stock_data["prev_close"]
-                    change_percent = (change / stock_data["prev_close"]) * 100
-                    stock_data["change"] = round(change, 2)
-                    stock_data["change_percent"] = round(change_percent, 2)
-                else:
-                    stock_data["change"] = 0
-                    stock_data["change_percent"] = 0
-
-                # 缓存股票名称
-                if self.name_cache and stock_data["name"]:
-                    self.name_cache.set_stock_name(stock_code, stock_data["name"])
-
-                # 缓存数据
-                self.cache.set_stock_data(stock_code, stock_data)
-                result[stock_code] = stock_data
-
-        except (json.JSONDecodeError, ValueError, IndexError, KeyError) as e:
-            print(f"解析批量股票数据时出错: {e}")
-            print(f"原始数据: {raw_data[:200]}...")  # 只打印前200字符用于调试
-            # 返回空结果
-            result = {code: None for code in requested_codes}
-
-        return result
-
-    def _parse_api_response(self, raw_data: str, target_code: str) -> Optional[Dict]:
-        """解析腾讯财经API的JSON响应数据"""
-        try:
-            # 解析JSON响应
-            json_data = json.loads(raw_data)
-
-            # 构建市场前缀+代码的key来查找数据
-            if target_code.startswith('6'):
-                market_prefix = "sh"
-            elif target_code.startswith('0') or target_code.startswith('3'):
-                market_prefix = "sz"
-            elif target_code.isdigit() and len(target_code) == 5:
-                market_prefix = "hk"
-            elif target_code.replace('.', '').isalpha():
-                market_prefix = "us"
-            else:
-                market_prefix = "sh"
-
-            key = f"{market_prefix}{target_code}"
+            market_prefix = self._get_market_prefix(stock_code)
+            key = f"{market_prefix}{stock_code}"
 
             # 检查是否有我们需要的股票数据
             if key not in json_data:
-                print(f"未找到股票数据: {key}")
+                logger.warning(f"未找到股票数据: {key}")
                 return None
 
             fields = json_data[key]
 
             if len(fields) < 40:  # 确保有足够的数据字段
-                print(f"数据字段不完整: {len(fields)}")
+                logger.warning(f"数据字段不完整: {len(fields)}")
                 return None
 
             # 解析股票数据
@@ -407,8 +344,8 @@ class StockDataFetcher:
                 "code": fields[2],  # 股票代码
                 "name": fields[1],  # 股票名称
                 "current_price": float(fields[3]),  # 当前价格
-                "prev_close": float(fields[4]),  # 昨收
-                "open_price": float(fields[5]),  # 今开
+                "prev_close": float(fields[4]),     # 昨收
+                "open_price": float(fields[5]),     # 今开
                 "volume": int(fields[6]) if fields[6] else 0,  # 成交量
                 "timestamp": datetime.now().isoformat()
             }
@@ -417,7 +354,7 @@ class StockDataFetcher:
             if len(fields) > 33:
                 stock_data["high_price"] = float(fields[33]) if fields[33] else 0  # 最高价
             if len(fields) > 34:
-                stock_data["low_price"] = float(fields[34]) if fields[34] else 0  # 最低价
+                stock_data["low_price"] = float(fields[34]) if fields[34] else 0   # 最低价
 
             # 计算涨跌幅
             if stock_data["prev_close"] > 0:
@@ -431,13 +368,45 @@ class StockDataFetcher:
 
             # 缓存股票名称
             if self.name_cache and stock_data["name"]:
-                self.name_cache.set_stock_name(target_code, stock_data["name"])
+                self.name_cache.set_stock_name(stock_code, stock_data["name"])
 
             return stock_data
 
-        except (json.JSONDecodeError, ValueError, IndexError, KeyError) as e:
-            print(f"解析股票数据时出错: {e}")
-            print(f"原始数据: {raw_data[:200]}...")  # 只打印前200字符用于调试
+        except (ValueError, IndexError, KeyError) as e:
+            logger.error(f"解析股票数据时出错: {e}")
+            return None
+
+    def _parse_batch_api_response(self, raw_data: str, requested_codes: List[str]) -> Dict[str, Optional[Dict]]:
+        """解析腾讯财经API的批量JSON响应数据"""
+        result = {}
+
+        try:
+            # 解析JSON响应
+            json_data = json.loads(raw_data)
+
+            for stock_code in requested_codes:
+                stock_data = self._parse_single_stock_data(json_data, stock_code)
+                if stock_data:
+                    # 缓存数据
+                    self.cache.set_stock_data(stock_code, stock_data)
+                result[stock_code] = stock_data
+
+        except json.JSONDecodeError as e:
+            logger.error(f"解析批量股票数据时出错: {e}")
+            logger.debug(f"原始数据: {raw_data[:200]}...")  # 只打印前200字符用于调试
+            # 返回空结果
+            result = {code: None for code in requested_codes}
+
+        return result
+
+    def _parse_api_response(self, raw_data: str, target_code: str) -> Optional[Dict]:
+        """解析腾讯财经API的JSON响应数据（单个股票）"""
+        try:
+            json_data = json.loads(raw_data)
+            return self._parse_single_stock_data(json_data, target_code)
+        except json.JSONDecodeError as e:
+            logger.error(f"解析股票数据时出错: {e}")
+            logger.debug(f"原始数据: {raw_data[:200]}...")  # 只打印前200字符用于调试
             return None
 
 
@@ -463,7 +432,7 @@ class AlertManager:
             with open(self.data_file, 'w', encoding='utf-8') as f:
                 json.dump(self.alerts, f, indent=2, ensure_ascii=False)
         except IOError as e:
-            print(f"保存提醒数据失败: {e}")
+            logger.error(f"保存提醒数据失败: {e}")
 
     def add_alert(self, user_id: int, stock_code: str, alert_type: str,
                   threshold: float, interval_minutes: int = 5, threshold_direction: str = 'both') -> bool:
@@ -617,13 +586,13 @@ class AlertManager:
             )
             return True
         except Exception as e:
-            print(f"发送提醒失败: {e}")
+            logger.error(f"发送提醒失败: {e}")
             return False
 
     def check_alerts_sync(self, fetcher: StockDataFetcher):
         """同步检查提醒并返回需要发送的消息列表（已废弃，使用异步版本）"""
         # 此方法已废弃，保留用于向后兼容
-        print("警告：check_alerts_sync方法已废弃，请使用异步的check_alerts_async方法")
+        logger.warning("警告：check_alerts_sync方法已废弃，请使用异步的check_alerts_async方法")
         return []
 
 
@@ -867,30 +836,31 @@ class StockBot:
 
     def start_polling(self):
         """启动机器人"""
-        print("启动股票提醒机器人...")
+        logger.info("启动股票提醒机器人...")
         try:
             self.app.run_polling()
         except Exception as e:
-            print(f"机器人启动失败: {e}")
+            logger.error(f"机器人启动失败: {e}")
             if "Conflict" in str(e):
-                print("检测到冲突：可能是另一个机器人实例正在运行")
-                print("请先停止其他机器人实例，然后重新启动")
+                logger.warning("检测到冲突：可能是另一个机器人实例正在运行")
+                logger.warning("请先停止其他机器人实例，然后重新启动")
             raise
 
     async def check_alerts_async(self):
         """异步检查提醒（使用批量获取和状态跟踪）"""
         try:
-            current_time = datetime.now()
-            current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
-            print(f"[{current_time_str}] 开始检查提醒，共 {len(self.alert_manager.alerts['alerts'])} 个提醒")
+            # 监控日志暂时注释，只保留启动日志
+            # current_time = datetime.now()
+            # current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
+            # logger.info(f"[{current_time_str}] 开始检查提醒，共 {len(self.alert_manager.alerts['alerts'])} 个提醒")
 
             # 收集需要检查的股票代码（去重）
             stock_codes_to_check = list(set(alert["stock_code"] for alert in self.alert_manager.alerts["alerts"]))
-            print(f"[{current_time_str}] 需要检查的股票数量: {len(stock_codes_to_check)}")
+            # logger.info(f"[{current_time_str}] 需要检查的股票数量: {len(stock_codes_to_check)}")
 
             # 批量获取股票数据
             stock_data_batch = self.fetcher.fetch_batch_stock_data(stock_codes_to_check)
-            print(f"[{current_time_str}] 成功获取 {len([s for s in stock_data_batch.values() if s is not None])} 个股票数据")
+            # logger.info(f"[{current_time_str}] 成功获取 {len([s for s in stock_data_batch.values() if s is not None])} 个股票数据")
 
             # 收集需要发送提醒的消息
             alerts_to_send = []
@@ -901,16 +871,15 @@ class StockBot:
 
                 # 检查是否在交易时间内
                 is_trading = is_trading_time(stock_code)
-                print(f"[{current_time_str}] 检查 {stock_code} 是否在交易时间内: {is_trading}")
+                # logger.info(f"[{current_time_str}] 检查 {stock_code} 是否在交易时间内: {is_trading}")
                 if not is_trading:
                     continue
 
                 if not stock_data:
-                    print(f"[{current_time_str}] 获取 {stock_code} 数据失败")
+                    # logger.warning(f"[{current_time_str}] 获取 {stock_code} 数据失败")
                     continue
 
-                print(
-                    f"[{current_time_str}] {stock_code} 价格: {stock_data.get('current_price', 0)}, 涨跌幅: {stock_data.get('change_percent', 0)}%")
+                # logger.info(f"[{current_time_str}] {stock_code} 价格: {stock_data.get('current_price', 0)}, 涨跌幅: {stock_data.get('change_percent', 0)}%")
 
                 # 检查提醒条件
                 alert_triggered = False
@@ -1009,39 +978,43 @@ class StockBot:
                                  f"📉 今日最低: ¥{low_price}\n"
                                  f"📊 成交量: {volume:,} 手")
 
-                        print(f"[{current_time_str}] {stock_code} 今日涨跌提醒触发: 涨跌幅={change_percent}%, 阈值={alert['threshold']}%")
+                        # logger.info(f"[{current_time_str}] {stock_code} 今日涨跌提醒触发: 涨跌幅={change_percent}%, 阈值={alert['threshold']}%")
 
                 # 检查是否可以发送提醒（价格变化类型使用时间间隔，今日涨跌类型使用状态跟踪）
                 if alert_triggered:
                     if alert["alert_type"] == "价格变化":
                         can_send = self.alert_manager.can_send_alert(alert)
-                        print(f"[{current_time_str}] {stock_code} 价格变化提醒，检查发送权限: {can_send}")
+                        # logger.info(f"[{current_time_str}] {stock_code} 价格变化提醒，检查发送权限: {can_send}")
                     else:  # 今日涨跌类型已经通过状态跟踪检查过了
                         can_send = True
-                        print(f"[{current_time_str}] {stock_code} 今日涨跌提醒，状态跟踪通过")
+                        # logger.info(f"[{current_time_str}] {stock_code} 今日涨跌提醒，状态跟踪通过")
 
                     if can_send:
                         alerts_to_send.append((alert["user_id"], message, stock_code))
-                        print(f"[{current_time_str}] {stock_code} 准备发送提醒消息: {message[:50]}...")
+                        # logger.info(f"[{current_time_str}] {stock_code} 准备发送提醒消息: {message[:50]}...")
                     else:
-                        print(f"[{current_time_str}] {stock_code} 因时间间隔限制跳过提醒")
+                        # logger.info(f"[{current_time_str}] {stock_code} 因时间间隔限制跳过提醒")
+                        pass
 
             # 批量发送提醒消息
             if alerts_to_send:
-                print(f"[{current_time_str}] 开始批量发送 {len(alerts_to_send)} 条提醒消息")
+                # logger.info(f"[{current_time_str}] 开始批量发送 {len(alerts_to_send)} 条提醒消息")
                 for chat_id, message, stock_code in alerts_to_send:
                     try:
                         success = await self.alert_manager.send_alert_message(self.bot, chat_id, message)
                         if success:
-                            print(f"[{current_time_str}] {stock_code} 提醒消息发送成功")
+                            # logger.info(f"[{current_time_str}] {stock_code} 提醒消息发送成功")
+                            pass
                         else:
-                            print(f"[{current_time_str}] {stock_code} 提醒消息发送失败")
+                            # logger.warning(f"[{current_time_str}] {stock_code} 提醒消息发送失败")
+                            pass
                     except Exception as e:
-                        print(f"[{current_time_str}] {stock_code} 发送提醒异常: {e}")
-                print(f"[{current_time_str}] 批量发送完成")
+                        # logger.error(f"[{current_time_str}] {stock_code} 发送提醒异常: {e}")
+                        pass
+                # logger.info(f"[{current_time_str}] 批量发送完成")
 
         except Exception as e:
-            print(f"异步检查提醒时出错: {e}")
+            logger.error(f"异步检查提醒时出错: {e}", exc_info=True)
 
     async def check_alerts_job(self, context):
         """Job队列调用的提醒检查函数"""

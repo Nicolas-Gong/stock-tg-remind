@@ -5,10 +5,11 @@
 """
 
 import json
+import logging
 import os
 import sys
 
-from stock_bot import StockBot
+from stock_bot import StockBot, logger
 
 
 def load_config():
@@ -44,35 +45,45 @@ def validate_config(config):
 
 def main():
     """主函数"""
-    print("🚀 启动股票提醒机器人...")
+    logger.info("🚀 开始启动股票提醒机器人...")
 
-    # 加载配置
-    config = load_config()
-    validate_config(config)
-
-    # 创建机器人实例
     try:
+        # 加载配置
+        logger.info("📋 加载配置文件...")
+        config = load_config()
+        validate_config(config)
+        logger.info("✅ 配置文件加载成功")
+
+        # 创建机器人实例
+        logger.info("🤖 初始化机器人...")
         bot = StockBot(config["telegram_token"])
-        print("✅ 机器人初始化成功")
+        logger.info("✅ 机器人初始化成功")
+
+        # 启动提醒检查
+        logger.info("🔄 启动定期提醒检查任务...")
+        bot.start_checking_alerts()
+        logger.info("✅ 提醒检查任务启动成功")
+
+        # 启动机器人
+        logger.info("📱 启动Telegram机器人轮询...")
+        logger.info("🎉 股票提醒机器人启动成功！")
+        logger.info("💡 使用 /start 命令开始与机器人交互")
+        logger.info("🛑 按 Ctrl+C 停止机器人")
+
+        try:
+            bot.start_polling()
+        except KeyboardInterrupt:
+            logger.info("🛑 收到停止信号，正在关闭机器人...")
+        except Exception as e:
+            logger.error(f"机器人运行时发生错误: {e}", exc_info=True)
+            raise
+        finally:
+            logger.info("🤖 机器人已停止运行")
+
     except Exception as e:
-        print(f"❌ 机器人初始化失败: {e}")
-        sys.exit(1)
-
-    # 启动提醒检查
-    print("🔄 启动提醒检查线程...")
-    bot.start_checking_alerts()
-
-    # 启动机器人
-    print("📱 启动Telegram机器人...")
-    print("机器人已启动！使用 /start 命令开始使用")
-    print("按 Ctrl+C 停止机器人")
-
-    try:
-        bot.start_polling()
-    except KeyboardInterrupt:
-        print("\n🛑 机器人已停止")
-    except Exception as e:
-        print(f"❌ 机器人运行出错: {e}")
+        logger.error(f"启动过程中发生错误: {e}", exc_info=True)
+        print(f"\n❌ 启动失败: {e}")
+        print("请检查日志文件 'stock_bot.log' 获取详细错误信息")
         sys.exit(1)
 
 
