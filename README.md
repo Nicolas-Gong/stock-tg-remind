@@ -64,11 +64,7 @@ pip install -r requirements.txt
 python start_bot.py
 ```
 
-或者直接运行主程序：
-
-```bash
-python stock_bot.py
-```
+**注意**：请使用 `start_bot.py` 启动机器人，它会自动加载配置并初始化所有功能。
 
 ## 📱 使用方法
 
@@ -172,6 +168,7 @@ python stock_bot.py
 ### 字段说明
 
 新接口数据字段位置：
+
 - `[0]`: 类型/状态
 - `[1]`: 股票名称
 - `[2]`: 股票代码
