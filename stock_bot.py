@@ -10,7 +10,6 @@ Telegram股票价格提醒机器人
    - 设置提醒频率
 4. 使用文件缓存存储数据
 """
-import asyncio
 import json
 import logging
 import os
@@ -344,8 +343,8 @@ class StockDataFetcher:
                 "code": fields[2],  # 股票代码
                 "name": fields[1],  # 股票名称
                 "current_price": float(fields[3]),  # 当前价格
-                "prev_close": float(fields[4]),     # 昨收
-                "open_price": float(fields[5]),     # 今开
+                "prev_close": float(fields[4]),  # 昨收
+                "open_price": float(fields[5]),  # 今开
                 "volume": int(fields[6]) if fields[6] else 0,  # 成交量
                 "timestamp": datetime.now().isoformat()
             }
@@ -354,7 +353,7 @@ class StockDataFetcher:
             if len(fields) > 33:
                 stock_data["high_price"] = float(fields[33]) if fields[33] else 0  # 最高价
             if len(fields) > 34:
-                stock_data["low_price"] = float(fields[34]) if fields[34] else 0   # 最低价
+                stock_data["low_price"] = float(fields[34]) if fields[34] else 0  # 最低价
 
             # 计算涨跌幅
             if stock_data["prev_close"] > 0:
@@ -929,15 +928,15 @@ class StockBot:
                             alert_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                             message = (f"🔔 价格变化提醒\n"
-                                     f"⏰ 提醒时间: {alert_time}\n"
-                                     f"📈 股票: {stock_data['name']} ({stock_data['code']})\n"
-                                     f"💰 当前价格: ¥{current_price}\n"
-                                     f"📊 {direction_desc}: {abs(change_percent)}% (¥{abs(price_change):.2f})\n"
-                                     f"🎯 阈值: {alert['threshold']}%\n"
-                                     f"📅 昨收: ¥{prev_close} ({'+' if daily_change >= 0 else ''}{daily_change}%)\n"
-                                     f"📈 今日最高: ¥{high_price}\n"
-                                     f"📉 今日最低: ¥{low_price}\n"
-                                     f"📊 成交量: {volume:,} 手")
+                                       f"⏰ 提醒时间: {alert_time}\n"
+                                       f"📈 股票: {stock_data['name']} ({stock_data['code']})\n"
+                                       f"💰 当前价格: ¥{current_price}\n"
+                                       f"📊 {direction_desc}: {abs(change_percent)}% (¥{abs(price_change):.2f})\n"
+                                       f"🎯 阈值: {alert['threshold']}%\n"
+                                       f"📅 昨收: ¥{prev_close} ({'+' if daily_change >= 0 else ''}{daily_change}%)\n"
+                                       f"📈 今日最高: ¥{high_price}\n"
+                                       f"📉 今日最低: ¥{low_price}\n"
+                                       f"📊 成交量: {volume:,} 手")
                     else:
                         # 如果没有历史价格，记录当前价格作为基准
                         self.alert_manager.update_last_price_for_alert(alert, current_price)
@@ -968,15 +967,15 @@ class StockBot:
                         alert_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                         message = (f"🔔 今日涨跌幅提醒\n"
-                                 f"⏰ 提醒时间: {alert_time}\n"
-                                 f"📈 股票: {stock_data['name']} ({stock_data['code']})\n"
-                                 f"💰 当前价格: ¥{current_price}\n"
-                                 f"📊 {direction_desc}: {abs(change_percent)}% (¥{abs(price_change):.2f})\n"
-                                 f"🎯 阈值: {alert['threshold']}%\n"
-                                 f"📅 昨收: ¥{prev_close}\n"
-                                 f"📈 今日最高: ¥{high_price}\n"
-                                 f"📉 今日最低: ¥{low_price}\n"
-                                 f"📊 成交量: {volume:,} 手")
+                                   f"⏰ 提醒时间: {alert_time}\n"
+                                   f"📈 股票: {stock_data['name']} ({stock_data['code']})\n"
+                                   f"💰 当前价格: ¥{current_price}\n"
+                                   f"📊 {direction_desc}: {abs(change_percent)}% (¥{abs(price_change):.2f})\n"
+                                   f"🎯 阈值: {alert['threshold']}%\n"
+                                   f"📅 昨收: ¥{prev_close}\n"
+                                   f"📈 今日最高: ¥{high_price}\n"
+                                   f"📉 今日最低: ¥{low_price}\n"
+                                   f"📊 成交量: {volume:,} 手")
 
                         # logger.info(f"[{current_time_str}] {stock_code} 今日涨跌提醒触发: 涨跌幅={change_percent}%, 阈值={alert['threshold']}%")
 
