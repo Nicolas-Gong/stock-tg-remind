@@ -112,10 +112,22 @@ def is_trading_time(stock_code: str) -> bool:
             (afternoon_start <= current_time <= afternoon_end)
 
     elif stock_code.replace('.', '').isalpha():
-        # 美股：美东时间 9:30-16:00，转换为北京时间 21:30(今晚) - 04:00(明早)
-        # 北京时间：21:30到23:59:59 或 00:00:00到04:00
-        us_start = datetime.strptime("21:30", "%H:%M").time()
-        us_end = datetime.strptime("04:00", "%H:%M").time()
+        # 美股：美东时间 9:30-16:00，根据冬令时/夏令时转换为北京时间
+        # 夏令时（3月-11月）：北京时间 21:30(今晚) - 04:00(明早)
+        # 冬令时（11月-次年3月）：北京时间 22:30(今晚) - 05:00(明早)
+
+        # 判断是否为冬令时（11月到次年3月）
+        month = now.month
+        is_winter_time = month >= 11 or month <= 3
+
+        if is_winter_time:
+            # 冬令时：美东时间比北京时间晚13小时，交易时间北京时间22:30-次日05:00
+            us_start = datetime.strptime("22:30", "%H:%M").time()
+            us_end = datetime.strptime("05:00", "%H:%M").time()
+        else:
+            # 夏令时：美东时间比北京时间晚12小时，交易时间北京时间21:30-次日04:00
+            us_start = datetime.strptime("21:30", "%H:%M").time()
+            us_end = datetime.strptime("04:00", "%H:%M").time()
 
         # 美股交易跨天，需要特殊处理
         if current_time >= us_start or current_time <= us_end:
@@ -420,10 +432,17 @@ class AlertManager:
         if os.path.exists(self.data_file):
             try:
                 with open(self.data_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    # 确保所有必要的字段都存在
+                    data.setdefault("alerts", [])
+                    data.setdefault("last_alert_times", {})
+                    data.setdefault("alert_states", {})
+                    data.setdefault("price_history", {})
+                    data.setdefault("alert_history", [])
+                    return data
             except (json.JSONDecodeError, IOError):
-                return {"alerts": [], "last_alert_times": {}}
-        return {"alerts": [], "last_alert_times": {}}
+                return {"alerts": [], "last_alert_times": {}, "alert_states": {}, "price_history": {}, "alert_history": []}
+        return {"alerts": [], "last_alert_times": {}, "alert_states": {}, "price_history": {}, "alert_history": []}
 
     def _save_alerts(self):
         """保存提醒数据"""
@@ -496,14 +515,16 @@ class AlertManager:
     def can_send_daily_change_alert(self, alert: Dict, change_percent: float) -> bool:
         """
         检查是否可以发送今日涨跌提醒
-        逻辑：只有当价格从低于阈值变为高于阈值时才发送提醒
+        逻辑：只有当涨跌幅从低于阈值变为高于阈值时才发送提醒一次
         """
         user_id = alert["user_id"]
         stock_code = alert["stock_code"]
         threshold = alert["threshold"]
         threshold_direction = alert.get("threshold_direction", "both")
+        alert_type = alert["alert_type"]
 
-        key = f"{user_id}_{stock_code}_daily_change"
+        # 为每个提醒创建唯一的状态key
+        key = f"{user_id}_{stock_code}_{alert_type}_{threshold}_{threshold_direction}"
 
         # 获取上次的状态
         last_state = self.alerts.get("alert_states", {}).get(key, {})
@@ -520,7 +541,7 @@ class AlertManager:
         # 上次是否已经触发过
         previously_triggered = last_state.get("triggered", False)
 
-        # 如果当前满足条件且上次不满足，则可以发送提醒
+        # 只有当状态从"未触发"变为"已触发"时才发送提醒
         can_send = currently_triggered and not previously_triggered
 
         # 更新状态
@@ -530,7 +551,8 @@ class AlertManager:
         self.alerts["alert_states"][key] = {
             "triggered": currently_triggered,
             "last_change_percent": change_percent,
-            "last_update": datetime.now().isoformat()
+            "last_update": datetime.now().isoformat(),
+            "alert_id": alert.get("id", f"{stock_code}_{alert_type}")
         }
         self._save_alerts()
 
@@ -583,10 +605,25 @@ class AlertManager:
                 text=message,
                 parse_mode=telegram.constants.ParseMode.HTML
             )
+            # 记录提醒历史
+            self.record_alert_history(chat_id, message)
             return True
         except Exception as e:
             logger.error(f"发送提醒失败: {e}")
             return False
+
+    def record_alert_history(self, user_id: int, message: str):
+        """记录提醒历史"""
+        alert_record = {
+            "user_id": user_id,
+            "message": message,
+            "timestamp": datetime.now().isoformat()
+        }
+        self.alerts["alert_history"].append(alert_record)
+        # 保留最近100条记录
+        if len(self.alerts["alert_history"]) > 100:
+            self.alerts["alert_history"] = self.alerts["alert_history"][-100:]
+        self._save_alerts()
 
     def check_alerts_sync(self, fetcher: StockDataFetcher):
         """同步检查提醒并返回需要发送的消息列表（已废弃，使用异步版本）"""
@@ -811,42 +848,99 @@ class StockBot:
             await update.message.reply_text("📋 你还没有添加任何提醒。使用 /add 命令添加新提醒。")
             return
 
-        message = "📋 你的股票提醒列表：\n\n"
+        # 按股票代码分组提醒
+        stock_groups = {}
         for i, alert in enumerate(alerts):
+            stock_code = alert['stock_code']
+            if stock_code not in stock_groups:
+                stock_groups[stock_code] = []
+            stock_groups[stock_code].append((i, alert))
+
+        message = "📋 你的股票提醒列表：\n\n"
+        total_alerts = len(alerts)
+
+        for stock_code, alert_list in stock_groups.items():
             # 获取股票名称
-            stock_name = self.name_cache.get_stock_name(alert['stock_code'])
+            stock_name = self.name_cache.get_stock_name(stock_code)
             if not stock_name:
                 # 如果缓存中没有，尝试获取一次
-                stock_data = self.fetcher.fetch_stock_data(alert['stock_code'])
+                stock_data = self.fetcher.fetch_stock_data(stock_code)
                 if stock_data:
                     stock_name = stock_data.get('name', '')
 
-            stock_display = f"{stock_name} ({alert['stock_code']})" if stock_name else alert['stock_code']
+            stock_display = f"{stock_name} ({stock_code})" if stock_name else stock_code
 
-            # 获取阈值方向显示
-            threshold_direction = alert.get('threshold_direction', 'both')
-            direction_symbols = {
-                'both': '±',
-                'up': '+',
-                'down': '-'
-            }
-            threshold_display = f"{direction_symbols[threshold_direction]}{alert['threshold']}"
+            message += f"📈 {stock_display}\n"
 
-            # 格式化创建时间
-            try:
-                created_datetime = datetime.fromisoformat(alert['created_at'])
-                created_time_str = created_datetime.strftime("%Y-%m-%d %H:%M:%S")
-            except (ValueError, TypeError):
-                created_time_str = alert['created_at']  # 如果格式化失败，使用原始值
+            # 显示该股票的所有提醒
+            alert_descriptions = []
+            for alert_index, alert in alert_list:
+                # 获取阈值方向显示
+                threshold_direction = alert.get('threshold_direction', 'both')
+                direction_symbols = {
+                    'both': '±',
+                    'up': '+',
+                    'down': '-'
+                }
+                threshold_display = f"{direction_symbols[threshold_direction]}{alert['threshold']}"
 
-            message += (
-                f"{i + 1}. 股票: {stock_display}\n"
-                f"   类型: {alert['alert_type']}\n"
-                f"   阈值: {threshold_display}%\n"
-                f"   时间间隔: {alert['interval_minutes']}分钟\n"
-                f"   创建时间: {created_time_str}\n\n"
-            )
+                alert_type = alert['alert_type']
+                interval_minutes = alert['interval_minutes']
 
+                alert_desc = f"{alert_type}({threshold_display}%, {interval_minutes}分钟)"
+                alert_descriptions.append(f"{alert_index + 1}. {alert_desc}")
+
+            message += f"   提醒设置：{', '.join(alert_descriptions)}\n\n"
+
+        # 显示最近提醒历史（按股票分组）
+        user_alert_history = [h for h in self.alert_manager.alerts.get("alert_history", []) if h["user_id"] == user.id]
+        if user_alert_history:
+            # 按股票分组提醒历史
+            stock_alert_history = {}
+            for history in user_alert_history[-20:]:  # 显示最近20条
+                # 从消息中提取股票代码
+                message_lines = history["message"].split('\n')
+                stock_line = next((line for line in message_lines if '📈 股票:' in line), '')
+                if stock_line:
+                    # 提取股票代码（格式：📈 股票: 名称 (代码)）
+                    try:
+                        stock_part = stock_line.split('(')[-1].rstrip(')')
+                        stock_code = stock_part.strip()
+                        if stock_code not in stock_alert_history:
+                            stock_alert_history[stock_code] = []
+                        stock_alert_history[stock_code].append(history)
+                    except:
+                        pass
+
+            if stock_alert_history:
+                message += "\n📅 最近提醒记录：\n"
+                for stock_code, histories in stock_alert_history.items():
+                    # 获取股票名称
+                    stock_name = self.name_cache.get_stock_name(stock_code)
+                    stock_display = f"{stock_name} ({stock_code})" if stock_name else stock_code
+
+                    message += f"📈 {stock_display}：提醒了 {len(histories)} 次\n"
+
+                    # 显示最近3次提醒时间
+                    for i, history in enumerate(histories[-3:]):
+                        try:
+                            alert_time = datetime.fromisoformat(history["timestamp"])
+                            time_str = alert_time.strftime("%m-%d %H:%M")
+                            # 从消息中提取提醒类型
+                            msg_lines = history["message"].split('\n')
+                            alert_type_line = next((line for line in msg_lines if '🔔' in line), '')
+                            if '涨跌幅提醒' in alert_type_line:
+                                alert_type = "今日涨跌"
+                            elif '价格变化提醒' in alert_type_line:
+                                alert_type = "价格变化"
+                            else:
+                                alert_type = "提醒"
+                            message += f"   • {time_str} {alert_type}\n"
+                        except:
+                            pass
+                    message += "\n"
+
+        message += f"📊 总计：{len(stock_groups)}只股票，{total_alerts}个提醒设置\n"
         message += "💡 使用「🗑️ 删除提醒」功能可以移除不需要的提醒。"
         reply_markup = self.create_main_menu()
         await update.message.reply_text(message, reply_markup=reply_markup)
