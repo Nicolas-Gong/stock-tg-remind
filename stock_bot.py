@@ -40,6 +40,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 禁用httpx的HTTP请求日志
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # 默认配置
 DEFAULT_CONFIG = {
     "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN",
